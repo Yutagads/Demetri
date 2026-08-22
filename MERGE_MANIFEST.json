@@ -1,0 +1,60 @@
+{
+  "base_backend": "backend.zip",
+  "frontend_source": "Front End.zip",
+  "frontend_tree_replaced": "client/",
+  "frontend_overlap_changes": 23,
+  "frontend_only_added": 7,
+  "backend_touched": [
+    "server/services/assetStorage.ts",
+    "server/routes/announcements.ts",
+    "server/routes/presentations.ts",
+    "server/routes/structure.ts",
+    "server/routes/attendance.ts",
+    "client/src/pages/admin/AdminPortal.tsx",
+    "package.json",
+    "tsconfig.json",
+    ".env.example",
+    "CLOUDINARY_SETUP.md",
+    "MERGE_NOTES.md"
+  ],
+  "cloudinary_media_points": [
+    "Admin school logo",
+    "Student avatar",
+    "Student banner",
+    "Teacher avatar",
+    "Admin announcement image",
+    "Admin announcement PDF",
+    "Teacher/student presentation image",
+    "Teacher/student presentation PDF",
+    "Teacher/student presentation PowerPoint/Word document",
+    "Teacher/student presentation video"
+  ],
+  "supabase_admin_persistence_points": [
+    "Students and teachers through Prisma + compatibility synchronization",
+    "Academic activities and grades through Prisma",
+    "Settings through compatibility store -> saveDb -> Supabase",
+    "Announcements/categories through compatibility store -> saveDb -> Supabase",
+    "Academic structure/schedules through compatibility store -> saveDb -> Supabase",
+    "Attendance sessions/records through compatibility store -> saveDb -> Supabase",
+    "Presentation metadata through compatibility store -> saveDb -> Supabase"
+  ],
+  "excluded_from_cloudinary": [
+    "Database backup import",
+    "CSV account import payload"
+  ],
+  "credentials_required": [
+    "DATABASE_URL",
+    "SMTP_USER",
+    "SMTP_PASS",
+    "FRONTEND_URL",
+    "CLOUDINARY_CLOUD_NAME",
+    "CLOUDINARY_API_KEY",
+    "CLOUDINARY_API_SECRET",
+    "CLOUDINARY_FOLDER",
+    "JWT_SECRET(optional)"
+  ],
+  "validation": {
+    "typescript": "npx tsc --noEmit passes",
+    "vite_build": "not executed to completion in this Linux container because supplied dependency set is platform-specific; run npm install then npm run build on target Windows environment"
+  }
+}

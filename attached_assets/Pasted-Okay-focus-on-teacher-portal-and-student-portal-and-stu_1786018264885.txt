@@ -1,0 +1,48 @@
+Okay focus on teacher portal and student portal and student portal for now. in the activity table, in adding activity, add a option to add attendance column where you can get the records or connect the column to the attendance tab. Ofcourse the masterlist of the table in the academc performance should be the same as the one in the attendance should be also the same table, you will add a column in the academic performance representing the attendance and the values in it should be in percentage total present/total attendance. make proper wiring in it
+
+Add also a Final Grade Column (same as forrmula column) this final grade Column can be used to push/released to the student record this will act as their grade. per grading. Check how the academic performance in the student works. They have academic performance modal in it and once the teacher release the specific grades, each grade will then be wired up to the corresponding specific students in the class basically the teacher create and records grades, then have a final grade for the section, then the final column table can be used to push the grades or release to student as their final grade
+
+9 minutes ago
+Inspecting files and tasks
+
+Inspecting files and tasks
+I’ll trace the existing teacher activity, attendance, and student academic-performance flows first, then wire the smallest consistent set of changes across the shared API and both portals.
+
+
+18 actions
+I found the core pieces already present: both portals use the same section masterlist endpoint, attendance sessions already expose per-student records, and the student portal already reads released final grades. I’m filling the missing connection: a persistent attendance percentage column, a configurable final-grade column, and teacher release actions that write to the existing final-grade API.
+
+
+Show less
+
+Opened TeacherAcademic.tsx
+
+Opened TeacherAcademic.tsx
+
+Opened TeacherPortal.tsx
+
+Opened StudentPerformance.tsx
+Evaluating academic performance display
+
+Evaluating academic performance display
+
+Opened TeacherAcademic.tsx
+
+Opened TeacherAcademic.tsx
+
+Opened TeacherAcademic.tsx
+Considering grade calculations
+
+Considering grade calculations
+
+Edited TeacherAcademic.tsx
+Enhancing mutation success handling
+
+Enhancing mutation success handling
+Addressing security concerns
+
+Addressing security concerns
+
+Edited TeacherAcademic.tsx
+
+Edited TeacherAcademic.tsx

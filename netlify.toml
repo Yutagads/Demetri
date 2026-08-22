@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build:web"
+  publish = "dist/public"
+
+[build.environment]
+  NODE_VERSION = "20.19.3"
+
+# React Router SPA fallback.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

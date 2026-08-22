@@ -1,0 +1,6 @@
+{
+  "name": "SMARTCLASS",
+  "description": "Comprehensive school management and smart classroom portal for students, teachers, and administrators featuring interactive attendance, class schedules, academic activities, announcements, smartboard, and presentation tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
