@@ -6,6 +6,8 @@ services:
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
+      - key: NODE_VERSION
+        value: 20.19.3
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
