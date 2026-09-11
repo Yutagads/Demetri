@@ -493,21 +493,32 @@ async function performSaveDb() {
             ? u.email.trim()
             : null
 
-        // Find by the compatibility-store ID first.
+        // NON-DESTRUCTIVE MATCH ORDER:
+        // 1) primary key (id)
+        // 2) unique username
+        // 3) unique email
+        // 4) create only when no existing identity can be matched
+        //
+        // The previous fix only checked id + username. That still allowed
+        // a stale db.json user with an existing email to reach create() and
+        // fail with User_email_key.
         let existingUser = await p.user.findUnique({
           where: { id: u.id },
         })
 
-        // If the ID changed between db.json and PostgreSQL, find the
-        // existing account by its unique username before creating anything.
         if (!existingUser && username) {
           existingUser = await p.user.findUnique({
             where: { username },
           })
         }
 
+        if (!existingUser && email) {
+          existingUser = await p.user.findUnique({
+            where: { email },
+          })
+        }
+
         const updateData: any = {
-          email,
           passwordHash: u.passwordHash,
           role: u.role,
           status: u.status,
@@ -518,9 +529,8 @@ async function performSaveDb() {
         }
 
         if (existingUser) {
-          // Only set username when it is not owned by a different account.
-          // This prevents User_username_key conflicts and never deletes or
-          // merges accounts.
+          // Only update a unique field when it is either already owned by
+          // this same record or not owned by another account.
           if (username && existingUser.username !== username) {
             const usernameOwner = await p.user.findUnique({
               where: { username },
@@ -531,13 +541,25 @@ async function performSaveDb() {
             }
           }
 
-          // Preserve the PostgreSQL record and its existing primary key.
+          if (email && existingUser.email !== email) {
+            const emailOwner = await p.user.findUnique({
+              where: { email },
+            })
+
+            if (!emailOwner || emailOwner.id === existingUser.id) {
+              updateData.email = email
+            }
+          }
+
+          // Preserve the existing PostgreSQL primary key.
+          // Never delete, replace, or merge accounts.
           await p.user.update({
             where: { id: existingUser.id },
             data: updateData,
           })
         } else {
-          // No matching ID or username exists, so create a new account.
+          // No matching ID, username, or email exists. This is a genuinely
+          // new account, so it is safe to create it.
           await p.user.create({
             data: {
               id: u.id,
@@ -1268,57 +1290,36 @@ export async function loadDb(): Promise<boolean> {
   }
 
   try {
-    const [
-      users,
-      admins,
-      students,
-      studentProfiles,
-      teachers,
-      teacherProfiles,
-      academicYears,
-      gradeLevels,
-      strands,
-      sections,
-      subjects,
-      studentSectionAssignments,
-      teacherSubjectAssignments,
-      classSchedules,
-      attendanceSessions,
-      attendanceRecords,
-      academicActivities,
-      studentScores,
-      announcementCategories,
-      announcements,
-      systemSettings,
-      presentationMaterials,
-      importedSheets,
-      finalGrades,
-    ] = await Promise.all([
-      prisma.user.findMany(),
-      prisma.admin.findMany(),
-      prisma.student.findMany(),
-      prisma.studentProfile.findMany(),
-      prisma.teacher.findMany(),
-      prisma.teacherProfile.findMany(),
-      prisma.academicYear.findMany(),
-      prisma.gradeLevel.findMany(),
-      prisma.strand.findMany(),
-      prisma.section.findMany(),
-      prisma.subject.findMany(),
-      prisma.studentSectionAssignment.findMany(),
-      prisma.teacherSubjectAssignment.findMany(),
-      prisma.classSchedule.findMany(),
-      prisma.attendanceSession.findMany(),
-      prisma.attendanceRecord.findMany(),
-      prisma.academicActivity.findMany(),
-      prisma.studentScore.findMany(),
-      prisma.announcementCategory.findMany(),
-      prisma.announcement.findMany(),
-      prisma.systemSetting.findMany(),
-      prisma.presentationMaterial.findMany(),
-      prisma.importedSheet.findMany(),
-      prisma.finalGrade.findMany(),
-    ])
+    // IMPORTANT: do not issue all table reads in Promise.all().
+    // Supabase session mode has a finite connection limit, and the old
+    // Promise.all() opened many Prisma queries at the same time, producing
+    // P2039 / EMAXCONNSESSION (pool_size: 15).
+    //
+    // Read one table at a time so startup uses a single active query at a time.
+    const users = await prisma.user.findMany()
+    const admins = await prisma.admin.findMany()
+    const students = await prisma.student.findMany()
+    const studentProfiles = await prisma.studentProfile.findMany()
+    const teachers = await prisma.teacher.findMany()
+    const teacherProfiles = await prisma.teacherProfile.findMany()
+    const academicYears = await prisma.academicYear.findMany()
+    const gradeLevels = await prisma.gradeLevel.findMany()
+    const strands = await prisma.strand.findMany()
+    const sections = await prisma.section.findMany()
+    const subjects = await prisma.subject.findMany()
+    const studentSectionAssignments = await prisma.studentSectionAssignment.findMany()
+    const teacherSubjectAssignments = await prisma.teacherSubjectAssignment.findMany()
+    const classSchedules = await prisma.classSchedule.findMany()
+    const attendanceSessions = await prisma.attendanceSession.findMany()
+    const attendanceRecords = await prisma.attendanceRecord.findMany()
+    const academicActivities = await prisma.academicActivity.findMany()
+    const studentScores = await prisma.studentScore.findMany()
+    const announcementCategories = await prisma.announcementCategory.findMany()
+    const announcements = await prisma.announcement.findMany()
+    const systemSettings = await prisma.systemSetting.findMany()
+    const presentationMaterials = await prisma.presentationMaterial.findMany()
+    const importedSheets = await prisma.importedSheet.findMany()
+    const finalGrades = await prisma.finalGrade.findMany()
 
     db.users = users.map(u => ({
       ...u,
