@@ -332,55 +332,30 @@ export default function IdleScreen() {
                   </div>
                 </div>
 
-              /* ── Image only: fill the card ── */
-              ) : currentSlide.image && !currentSlide.description && !imgError ? (
-                <div className="relative flex-1 min-h-0">
+              /* ── Image slide (banner/poster style): image fills whole container with text floating in bottom-left ── */
+              ) : currentSlide.image && !imgError ? (
+                <div className="relative flex-1 min-h-0 overflow-hidden">
                   <img
                     src={currentSlide.image}
                     alt={currentSlide.title}
-                    className="w-full h-full object-contain bg-gray-900"
+                    className="w-full h-full object-cover"
                     onError={() => setImgError(true)}
                   />
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent px-4 sm:px-8 py-4 sm:py-6 pointer-events-none">
-                    <div className="inline-flex items-center gap-2 bg-white/20 backdrop-blur-sm px-3 py-1 rounded-full mb-2 w-fit">
-                      <span className="text-white/90">{CATEGORY_ICONS[activeCategory?.name] || <BookOpen className="w-3.5 h-3.5" />}</span>
-                      <span className="text-white/90 text-xs font-poppins font-semibold">{activeCategory?.name}</span>
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-5 sm:p-7 lg:p-10 flex flex-col justify-end items-start pointer-events-none">
+                    <div className="inline-flex items-center gap-2 bg-white/20 backdrop-blur-md px-3 py-1 rounded-full mb-2 sm:mb-3 w-fit border border-white/20">
+                      <span className="text-white">{CATEGORY_ICONS[activeCategory?.name] || <BookOpen className="w-3.5 h-3.5" />}</span>
+                      <span className="text-white text-xs font-poppins font-semibold">{activeCategory?.name}</span>
                     </div>
-                    <h2 className="text-white font-poppins font-bold text-lg sm:text-2xl md:text-3xl leading-tight">
+                    <h2 className="text-white font-poppins font-bold text-2xl sm:text-3xl lg:text-4xl mb-2 sm:mb-3 leading-tight drop-shadow-md">
                       {currentSlide.title}
                     </h2>
-                    {currentSlide.publishedAt && (
-                      <p className="text-white/60 font-inter text-xs sm:text-sm mt-1">
-                        {format(new Date(currentSlide.publishedAt), 'MMMM d, yyyy')}
+                    {currentSlide.description && (
+                      <p className="text-white/90 font-inter text-base sm:text-lg leading-relaxed max-w-4xl drop-shadow line-clamp-3 sm:line-clamp-4">
+                        {currentSlide.description}
                       </p>
                     )}
-                  </div>
-                </div>
-
-              /* ── Image + text: stack on mobile, side-by-side on md+ ── */
-              ) : currentSlide.image && currentSlide.description && !imgError ? (
-                <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-auto md:overflow-hidden">
-                  <div className="w-full md:w-1/2 flex-shrink-0 min-h-[200px] sm:min-h-[260px] md:min-h-0">
-                    <img
-                      src={currentSlide.image}
-                      alt={currentSlide.title}
-                      className="w-full h-full object-cover"
-                      onError={() => setImgError(true)}
-                    />
-                  </div>
-                  <div className="flex flex-col justify-center p-5 sm:p-7 lg:p-10 md:w-1/2 overflow-y-auto">
-                    <div className="inline-flex items-center gap-2 bg-primary/10 px-3 py-1 rounded-full mb-3 sm:mb-4 w-fit">
-                      <span className="text-primary">{CATEGORY_ICONS[activeCategory?.name] || <BookOpen className="w-3.5 h-3.5" />}</span>
-                      <span className="text-primary text-xs font-poppins font-semibold">{activeCategory?.name}</span>
-                    </div>
-                    <h2 className="text-gray-900 font-poppins font-bold text-2xl sm:text-3xl lg:text-4xl mb-3 sm:mb-4 leading-tight">
-                      {currentSlide.title}
-                    </h2>
-                    <p className="text-gray-600 font-inter text-base sm:text-lg leading-relaxed line-clamp-5 sm:line-clamp-6">
-                      {currentSlide.description}
-                    </p>
                     {currentSlide.publishedAt && (
-                      <p className="text-gray-400 font-inter text-xs sm:text-sm mt-3 sm:mt-4">
+                      <p className="text-white/70 font-inter text-xs sm:text-sm mt-2 sm:mt-3 drop-shadow">
                         {format(new Date(currentSlide.publishedAt), 'MMMM d, yyyy')}
                       </p>
                     )}
@@ -454,3 +429,4 @@ export default function IdleScreen() {
     </div>
   )
 }
+ 
