@@ -483,39 +483,77 @@ async function performSaveDb() {
         // ───────────────────────────────────────────────────────────────────────
 
       for (const u of db.users) {
-        await p.user.upsert({
+        const username =
+          typeof u.username === 'string' && u.username.trim() !== ''
+            ? u.username.trim()
+            : null
+
+        const email =
+          typeof u.email === 'string' && u.email.trim() !== ''
+            ? u.email.trim()
+            : null
+
+        // Find by the compatibility-store ID first.
+        let existingUser = await p.user.findUnique({
           where: { id: u.id },
-          update: {
-            email: u.email ?? null,
-            username: u.username ?? null,
-            passwordHash: u.passwordHash,
-            role: u.role,
-            status: u.status,
-            isFirstLogin: u.isFirstLogin,
-            lastLogin: u.lastLogin ? new Date(u.lastLogin) : null,
-            failedLoginAttempts: u.failedLoginAttempts ?? 0,
-            lockedUntil: u.lockedUntil
-              ? new Date(u.lockedUntil)
-              : null,
-          },
-          create: {
-            id: u.id,
-            email: u.email ?? null,
-            username: u.username ?? null,
-            passwordHash: u.passwordHash,
-            role: u.role,
-            status: u.status,
-            isFirstLogin: u.isFirstLogin,
-            lastLogin: u.lastLogin
-              ? new Date(u.lastLogin)
-              : null,
-            failedLoginAttempts: u.failedLoginAttempts ?? 0,
-            lockedUntil: u.lockedUntil
-              ? new Date(u.lockedUntil)
-              : null,
-            createdAt: new Date(u.createdAt),
-          },
         })
+
+        // If the ID changed between db.json and PostgreSQL, find the
+        // existing account by its unique username before creating anything.
+        if (!existingUser && username) {
+          existingUser = await p.user.findUnique({
+            where: { username },
+          })
+        }
+
+        const updateData: any = {
+          email,
+          passwordHash: u.passwordHash,
+          role: u.role,
+          status: u.status,
+          isFirstLogin: u.isFirstLogin,
+          lastLogin: u.lastLogin ? new Date(u.lastLogin) : null,
+          failedLoginAttempts: u.failedLoginAttempts ?? 0,
+          lockedUntil: u.lockedUntil ? new Date(u.lockedUntil) : null,
+        }
+
+        if (existingUser) {
+          // Only set username when it is not owned by a different account.
+          // This prevents User_username_key conflicts and never deletes or
+          // merges accounts.
+          if (username && existingUser.username !== username) {
+            const usernameOwner = await p.user.findUnique({
+              where: { username },
+            })
+
+            if (!usernameOwner || usernameOwner.id === existingUser.id) {
+              updateData.username = username
+            }
+          }
+
+          // Preserve the PostgreSQL record and its existing primary key.
+          await p.user.update({
+            where: { id: existingUser.id },
+            data: updateData,
+          })
+        } else {
+          // No matching ID or username exists, so create a new account.
+          await p.user.create({
+            data: {
+              id: u.id,
+              email,
+              username,
+              passwordHash: u.passwordHash,
+              role: u.role,
+              status: u.status,
+              isFirstLogin: u.isFirstLogin,
+              lastLogin: u.lastLogin ? new Date(u.lastLogin) : null,
+              failedLoginAttempts: u.failedLoginAttempts ?? 0,
+              lockedUntil: u.lockedUntil ? new Date(u.lockedUntil) : null,
+              createdAt: new Date(u.createdAt),
+            },
+          })
+        }
       }
 
       // ───────────────────────────────────────────────────────────────────────
