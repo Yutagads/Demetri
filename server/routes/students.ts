@@ -20,6 +20,9 @@ import { emailSchema, nameSchema, optionalDateSchema, optionalMeasurement, optio
 
 const router = Router()
 
+const ACADEMIC_02_TADIQUE_ID = '__ACADEMIC_02_TADIQUE__'
+const ACADEMIC_02_TADIQUE_NAME = 'Academic 02-Tadique'
+
 
 // ============================================================
 // IMAGE UPLOADS
@@ -108,9 +111,10 @@ const smtpUser =
 const smtpPass =
   process.env.SMTP_PASS?.trim()
 
-const frontendUrl =
-  process.env.FRONTEND_URL?.trim() ||
-  'http://localhost:5173/login'
+const configuredFrontendUrl = process.env.FRONTEND_URL?.trim() || 'http://localhost:5173'
+const frontendUrl = configuredFrontendUrl.replace(/\/$/, '').endsWith('/login')
+  ? configuredFrontendUrl.replace(/\/$/, '')
+  : `${configuredFrontendUrl.replace(/\/$/, '')}/login`
 
 // ============================================================
 // GMAIL TRANSPORTER
@@ -233,6 +237,13 @@ async function sendStudentCredentialsEmail(
 
       subject:
         'SMARTCLASS Student Account Credentials',
+
+      replyTo: smtpUser,
+
+      headers: {
+        'X-Priority': '1',
+        Importance: 'high',
+      },
 
       text: `
 Hello ${fullName},
@@ -655,41 +666,29 @@ router.post(
       const data =
         z
           .object({
-            studentNumber:
-              z.string().min(1),
+            studentNumber: studentNumberSchema,
 
-            fullName:
-              z.string().min(1),
+            fullName: nameSchema('Full Name'),
 
-            email:
-              z.string().email(),
+            email: emailSchema,
 
-            gender:
-              z.string().optional(),
+            gender: z.string().trim().min(1, 'Gender is required.'),
 
-            birthDate:
-              z.string().optional(),
+            birthDate: z.string().trim().min(1, 'Birth date is required.').refine(v => optionalDate(v) !== null, 'Birth date is invalid.'),
 
-            contactNumber:
-              z.string().optional(),
+            contactNumber: optionalPhoneSchema.refine(v => !!v?.trim(), 'Contact number is required.'),
 
-            guardianName:
-              z.string().optional(),
+            guardianName: nameSchema('Guardian Name'),
 
-            guardianContact:
-              z.string().optional(),
+            guardianContact: optionalPhoneSchema.refine(v => !!v?.trim(), 'Guardian contact is required.'),
 
-            gradeLevelId:
-              z.string().optional(),
+            gradeLevelId: z.string().trim().min(1, 'Grade Level is required.'),
 
-            strandId:
-              z.string().optional(),
+            strandId: z.string().trim().optional().default(''),
 
-            sectionId:
-              z.string().optional(),
+            sectionId: z.string().trim().min(1, 'Section is required.'),
 
-            academicYearId:
-              z.string().optional(),
+            academicYearId: z.string().trim().min(1, 'Academic Year is required.'),
           })
           .parse(req.body)
 
@@ -843,29 +842,44 @@ router.post(
               },
             )
 
-            if (
-              data.sectionId &&
-              data.academicYearId &&
-              data.gradeLevelId
-            ) {
-              await tx.studentSectionAssignment.create(
-                {
-                  data: {
-                    id: uuidv4(),
+            if (data.sectionId && data.academicYearId && data.gradeLevelId) {
+              let resolvedSectionId = data.sectionId
 
-                    studentId,
-
-                    sectionId:
-                      data.sectionId,
-
-                    academicYearId:
-                      data.academicYearId,
-
-                    gradeLevelId:
-                      data.gradeLevelId,
+              // The Create Student form offers this requested section as a convenience option.
+              // If it does not exist yet for the selected grade level, create it once.
+              if (data.sectionId === ACADEMIC_02_TADIQUE_ID) {
+                const existingSection = await tx.section.findFirst({
+                  where: {
+                    gradeLevelId: data.gradeLevelId,
+                    name: ACADEMIC_02_TADIQUE_NAME,
                   },
+                })
+
+                if (existingSection) {
+                  resolvedSectionId = existingSection.id
+                } else {
+                  const createdSection = await tx.section.create({
+                    data: {
+                      id: uuidv4(),
+                      gradeLevelId: data.gradeLevelId,
+                      strandId: data.strandId || null,
+                      name: ACADEMIC_02_TADIQUE_NAME,
+                      status: 'active',
+                    },
+                  })
+                  resolvedSectionId = createdSection.id
+                }
+              }
+
+              await tx.studentSectionAssignment.create({
+                data: {
+                  id: uuidv4(),
+                  studentId,
+                  sectionId: resolvedSectionId,
+                  academicYearId: data.academicYearId,
+                  gradeLevelId: data.gradeLevelId,
                 },
-              )
+              })
             }
 
             return tx.student.findUnique(
@@ -914,7 +928,7 @@ router.post(
         | null = null
 
       try {
-        await sendStudentCredentialsEmail(
+        void sendStudentCredentialsEmail(
           {
             email,
 
@@ -1373,7 +1387,7 @@ router.post(
         | null = null
 
       try {
-        await sendStudentCredentialsEmail(
+        void sendStudentCredentialsEmail(
           {
             email: s.email,
 
@@ -1874,7 +1888,7 @@ router.post(
           | undefined
 
         try {
-          await sendStudentCredentialsEmail(
+          void sendStudentCredentialsEmail(
             {
               email:
                 normalizedEmail,

@@ -29,6 +29,11 @@ import AdminStudentAccountStatus from './AdminStudentAccountStatus'
 
 type Tab = 'students' | 'archived' | 'sections' | 'account-status'
 
+// Special section requested for the student Create Account dropdown.
+// The backend resolves this to a real Section record for the selected grade level.
+const ACADEMIC_02_TADIQUE_ID = '__ACADEMIC_02_TADIQUE__'
+const ACADEMIC_02_TADIQUE_NAME = 'Academic 02-Tadique'
+
 export default function AdminStudents() {
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<Tab>('students')
@@ -67,25 +72,31 @@ export default function AdminStudents() {
     const emailRes = validateEmail(form.email, true)
     if (!emailRes.valid && emailRes.error) errors.email = emailRes.error
 
-    if (form.contactNumber) {
-      const phoneRes = validatePhilippinePhone(form.contactNumber, false)
+    {
+      const phoneRes = validatePhilippinePhone(form.contactNumber, true)
       if (!phoneRes.valid && phoneRes.error) errors.contactNumber = phoneRes.error
     }
 
-    if (form.guardianContact) {
-      const guardPhoneRes = validatePhilippinePhone(form.guardianContact, false)
+    {
+      const guardPhoneRes = validatePhilippinePhone(form.guardianContact, true)
       if (!guardPhoneRes.valid && guardPhoneRes.error) errors.guardianContact = guardPhoneRes.error
     }
 
-    if (form.guardianName) {
-      const guardNameRes = validateFullName(form.guardianName, 'Guardian Name', false)
+    {
+      const guardNameRes = validateFullName(form.guardianName, 'Guardian Name', true)
       if (!guardNameRes.valid && guardNameRes.error) errors.guardianName = guardNameRes.error
     }
 
-    if (form.birthDate) {
-      const dateRes = validateBirthDate(form.birthDate, false)
+    {
+      const dateRes = validateBirthDate(form.birthDate, true)
       if (!dateRes.valid && dateRes.error) errors.birthDate = dateRes.error
     }
+
+    if (!form.gender.trim()) errors.gender = 'Gender is required'
+    if (!form.academicYearId) errors.academicYearId = 'Academic Year is required'
+    if (!form.gradeLevelId) errors.gradeLevelId = 'Grade Level is required'
+    if (strands.length > 0 && !form.strandId) errors.strandId = 'Strand is required'
+    if (!form.sectionId) errors.sectionId = 'Section is required'
 
     setFormErrors(errors)
     return Object.keys(errors).length === 0
@@ -191,6 +202,9 @@ export default function AdminStudents() {
   const selectedLevel   = (gradeLevels as any[]).find((g: any) => g.id === form.gradeLevelId) as any
   const strands         = selectedLevel?.strands || []
   const formSections    = selectedLevel?.sections?.filter((s: any) => !form.strandId || s.strandId === form.strandId) || []
+  const sectionOptions  = form.gradeLevelId
+    ? [...formSections, ...(formSections.some((s: any) => s.name === ACADEMIC_02_TADIQUE_NAME) ? [] : [{ id: ACADEMIC_02_TADIQUE_ID, name: ACADEMIC_02_TADIQUE_NAME }])]
+    : []
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -330,7 +344,7 @@ export default function AdminStudents() {
               <div className="bg-gray-50 border border-border rounded-xl p-4 flex flex-wrap gap-3 items-end animate-fade-in">
                 {/* Grade Level */}
                 <div className="flex-1 min-w-[140px]">
-                  <label className="block text-xs font-inter font-medium text-text-secondary mb-1">Grade Level</label>
+                  <label className="block text-xs font-inter font-medium text-text-secondary mb-1">Grade Level *</label>
                   <select
                     className="input-field text-sm py-2"
                     value={filterGrade}
@@ -345,7 +359,7 @@ export default function AdminStudents() {
 
                 {/* Section */}
                 <div className="flex-1 min-w-[140px]">
-                  <label className="block text-xs font-inter font-medium text-text-secondary mb-1">Section</label>
+                  <label className="block text-xs font-inter font-medium text-text-secondary mb-1">Section *</label>
                   <select
                     className="input-field text-sm py-2"
                     value={filterSection}
@@ -617,6 +631,7 @@ export default function AdminStudents() {
                   </Button>
                   <Button
                     loading={createMutation.isPending}
+                    disabled={createMutation.isPending}
                     onClick={handleCreateStudent}
                   >
                     Create Student
@@ -625,6 +640,11 @@ export default function AdminStudents() {
               </div>
             }
           >
+            {Object.keys(formErrors).length > 0 && (
+              <div className="mb-4 rounded-xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger font-inter">
+                Please complete all required fields before creating the student.
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Input
                 label="Student Number *"
@@ -647,7 +667,7 @@ export default function AdminStudents() {
                 error={formErrors.fullName}
               />
               <EmailInput
-                label="Email Address"
+                label="Email Address *"
                 required
                 value={form.email}
                 onChange={val => {
@@ -657,7 +677,7 @@ export default function AdminStudents() {
                 error={formErrors.email}
               />
               <PhoneInput
-                label="Contact Number"
+                label="Contact Number *"
                 value={form.contactNumber}
                 onChange={val => {
                   setForm(f => ({ ...f, contactNumber: val }))
@@ -668,13 +688,14 @@ export default function AdminStudents() {
               />
               <div>
                 <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Gender</label>
-                <select className="input-field" value={form.gender} onChange={e => setForm(f => ({ ...f, gender: e.target.value }))}>
+                <select className={`input-field ${formErrors.gender ? 'border-danger focus:ring-danger' : ''}`} value={form.gender} onChange={e => { setForm(f => ({ ...f, gender: e.target.value })); if (formErrors.gender) setFormErrors(errs => ({ ...errs, gender: '' })) }}>
                   <option value="">Select Gender</option>
                   <option>Male</option><option>Female</option><option>Other</option>
                 </select>
+                {formErrors.gender && <p className="mt-1 text-xs text-danger font-inter">{formErrors.gender}</p>}
               </div>
               <div>
-                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Birth Date</label>
+                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Birth Date *</label>
                 <input
                   type="date"
                   className={`input-field ${formErrors.birthDate ? 'border-danger focus:ring-danger' : ''}`}
@@ -687,7 +708,7 @@ export default function AdminStudents() {
                 {formErrors.birthDate && <p className="mt-1 text-xs text-danger font-inter">{formErrors.birthDate}</p>}
               </div>
               <Input
-                label="Guardian Name"
+                label="Guardian Name *"
                 placeholder="Parent/Guardian"
                 value={form.guardianName}
                 onChange={e => {
@@ -697,7 +718,7 @@ export default function AdminStudents() {
                 error={formErrors.guardianName}
               />
               <PhoneInput
-                label="Guardian Contact"
+                label="Guardian Contact *"
                 value={form.guardianContact}
                 onChange={val => {
                   setForm(f => ({ ...f, guardianContact: val }))
@@ -707,34 +728,38 @@ export default function AdminStudents() {
                 hint="Philippine mobile format (e.g. 912 345 6789)"
               />
               <div>
-                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Academic Year</label>
-                <select className="input-field" value={form.academicYearId} onChange={e => setForm(f => ({ ...f, academicYearId: e.target.value }))}>
+                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Academic Year *</label>
+                <select className={`input-field ${formErrors.academicYearId ? 'border-danger focus:ring-danger' : ''}`} value={form.academicYearId} onChange={e => { setForm(f => ({ ...f, academicYearId: e.target.value })); if (formErrors.academicYearId) setFormErrors(errs => ({ ...errs, academicYearId: '' })) }}>
                   <option value="">Select Academic Year</option>
                   {(academicYears as any[]).map((y: any) => <option key={y.id} value={y.id}>{y.name}</option>)}
                 </select>
+                {formErrors.academicYearId && <p className="mt-1 text-xs text-danger font-inter">{formErrors.academicYearId}</p>}
               </div>
               <div>
-                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Grade Level</label>
-                <select className="input-field" value={form.gradeLevelId} onChange={e => setForm(f => ({ ...f, gradeLevelId: e.target.value, strandId: '', sectionId: '' }))}>
+                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Grade Level *</label>
+                <select className={`input-field ${formErrors.gradeLevelId ? 'border-danger focus:ring-danger' : ''}`} value={form.gradeLevelId} onChange={e => { setForm(f => ({ ...f, gradeLevelId: e.target.value, strandId: '', sectionId: '' })); if (formErrors.gradeLevelId) setFormErrors(errs => ({ ...errs, gradeLevelId: '' })); if (formErrors.strandId || formErrors.sectionId) setFormErrors(errs => ({ ...errs, strandId: '', sectionId: '' })) }}>
                   <option value="">Select Grade Level</option>
                   {(gradeLevels as any[]).map((g: any) => <option key={g.id} value={g.id}>{g.name}</option>)}
                 </select>
+                {formErrors.gradeLevelId && <p className="mt-1 text-xs text-danger font-inter">{formErrors.gradeLevelId}</p>}
               </div>
               {strands.length > 0 && (
                 <div>
-                  <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Strand</label>
-                  <select className="input-field" value={form.strandId} onChange={e => setForm(f => ({ ...f, strandId: e.target.value, sectionId: '' }))}>
+                  <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Strand *</label>
+                  <select className={`input-field ${formErrors.strandId ? 'border-danger focus:ring-danger' : ''}`} value={form.strandId} onChange={e => { setForm(f => ({ ...f, strandId: e.target.value, sectionId: '' })); if (formErrors.strandId || formErrors.sectionId) setFormErrors(errs => ({ ...errs, strandId: '', sectionId: '' })) }}>
                     <option value="">Select Strand</option>
                     {strands.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
+                  {formErrors.strandId && <p className="mt-1 text-xs text-danger font-inter">{formErrors.strandId}</p>}
                 </div>
               )}
               <div>
-                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Section</label>
-                <select className="input-field" value={form.sectionId} onChange={e => setForm(f => ({ ...f, sectionId: e.target.value }))}>
+                <label className="block text-sm font-medium font-inter text-text-primary mb-1.5">Section *</label>
+                <select className={`input-field ${formErrors.sectionId ? 'border-danger focus:ring-danger' : ''}`} value={form.sectionId} onChange={e => { setForm(f => ({ ...f, sectionId: e.target.value })); if (formErrors.sectionId) setFormErrors(errs => ({ ...errs, sectionId: '' })) }}>
                   <option value="">Select Section</option>
-                  {formSections.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  {sectionOptions.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
+                {formErrors.sectionId && <p className="mt-1 text-xs text-danger font-inter">{formErrors.sectionId}</p>}
               </div>
             </div>
           </Modal>

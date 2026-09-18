@@ -52,15 +52,17 @@ export default function AdminTeachers() {
     const emailRes = validateEmail(form.email, true)
     if (!emailRes.valid && emailRes.error) errors.email = emailRes.error
 
-    if (form.employeeId) {
-      const empRes = validateEmployeeId(form.employeeId, false)
+    {
+      const empRes = validateEmployeeId(form.employeeId, true)
       if (!empRes.valid && empRes.error) errors.employeeId = empRes.error
     }
 
-    if (form.contactNumber) {
-      const phoneRes = validatePhilippinePhone(form.contactNumber, false)
+    {
+      const phoneRes = validatePhilippinePhone(form.contactNumber, true)
       if (!phoneRes.valid && phoneRes.error) errors.contactNumber = phoneRes.error
     }
+
+    if (!form.department.trim()) errors.department = 'Department is required'
 
     setFormErrors(errors)
     return Object.keys(errors).length === 0
@@ -408,6 +410,7 @@ export default function AdminTeachers() {
               </Button>
               <Button
                 loading={createMutation.isPending}
+                disabled={createMutation.isPending}
                 onClick={handleCreateTeacher}
               >
                 Create Teacher
@@ -439,7 +442,7 @@ export default function AdminTeachers() {
             error={formErrors.email}
           />
           <Input
-            label="Employee ID"
+            label="Employee ID *"
             placeholder="e.g. EMP-001"
             value={form.employeeId}
             onChange={e => {
@@ -447,16 +450,20 @@ export default function AdminTeachers() {
               if (formErrors.employeeId) setFormErrors(errs => ({ ...errs, employeeId: '' }))
             }}
             error={formErrors.employeeId}
-            hint="Optional unique alphanumeric identifier"
+            hint="Required unique alphanumeric identifier"
           />
           <Input
-            label="Department"
+            label="Department *"
             placeholder="Science Department"
             value={form.department}
-            onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
+            onChange={e => {
+              setForm(f => ({ ...f, department: e.target.value }))
+              if (formErrors.department) setFormErrors(errs => ({ ...errs, department: "" }))
+            }}
+            error={formErrors.department}
           />
           <PhoneInput
-            label="Contact Number"
+            label="Contact Number *"
             value={form.contactNumber}
             onChange={val => {
               setForm(f => ({ ...f, contactNumber: val }))

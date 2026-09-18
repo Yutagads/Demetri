@@ -508,9 +508,12 @@ export function getRealPrisma(): any {
       ssl: connectionString.includes('supabase.co') || connectionString.includes('sslmode=')
         ? { rejectUnauthorized: false }
         : undefined,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
+      // Supabase session/transaction poolers have a finite connection limit.
+      // Keep the local/Render app pool small so multiple app instances do not
+      // exhaust the database connection pool.
+      max: 3,
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 30000,
     })
 
     const adapter = new PrismaPg(pool)

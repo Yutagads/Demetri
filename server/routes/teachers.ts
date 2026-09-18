@@ -25,7 +25,10 @@ const bannerUpload = multer({
 
 const smtpUser = process.env.SMTP_USER?.trim()
 const smtpPass = process.env.SMTP_PASS?.trim()
-const frontendUrl = process.env.FRONTEND_URL?.trim() || 'http://localhost:5173/login'
+const configuredFrontendUrl = process.env.FRONTEND_URL?.trim() || 'http://localhost:5173'
+const frontendUrl = configuredFrontendUrl.replace(/\/$/, '').endsWith('/login')
+  ? configuredFrontendUrl.replace(/\/$/, '')
+  : `${configuredFrontendUrl.replace(/\/$/, '')}/login`
 
 const mailTransporter = nodemailer.createTransport({
   service: 'gmail',
@@ -58,6 +61,11 @@ async function sendTeacherCredentialsEmail(params: {
     from: `"SMARTCLASS" <${smtpUser}>`,
     to: params.email,
     subject: 'SMARTCLASS Teacher Account Credentials',
+    replyTo: smtpUser,
+    headers: {
+      'X-Priority': '1',
+      Importance: 'high',
+    },
     text: `
 Hello ${params.fullName},
 
@@ -65,12 +73,40 @@ Your SMARTCLASS teacher account has been created.
 
 Email: ${params.email}
 ${params.employeeId ? `Employee ID: ${params.employeeId}\n` : ''}Temporary Password: ${params.tempPassword}
-Login: ${frontendUrl}
+
+LOGIN TO SMARTCLASS:
+${frontendUrl}
 
 This is a temporary password. You will be required to create a new password after your first successful login.
 
 Regards,
 SMARTCLASS Administration
+    `.trim(),
+    html: `
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f3f4f6;font-family:Arial,sans-serif;color:#111827;">
+  <div style="max-width:560px;margin:auto;background:#ffffff;border-radius:12px;padding:32px;">
+    <h2 style="margin-top:0;">SMARTCLASS Teacher Account</h2>
+    <p>Hello ${params.fullName},</p>
+    <p>Your SMARTCLASS teacher account has been successfully created.</p>
+    <div style="background:#f9fafb;border-radius:10px;padding:20px;margin:20px 0;">
+      <p style="margin:0 0 10px;"><strong>Email:</strong> ${params.email}</p>
+      ${params.employeeId ? `<p style="margin:0 0 10px;"><strong>Employee ID:</strong> ${params.employeeId}</p>` : ''}
+      <p style="margin:0;"><strong>Temporary Password:</strong> ${params.tempPassword}</p>
+    </div>
+    <div style="text-align:center;margin:28px 0;">
+      <a href="${frontendUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:14px 24px;border-radius:8px;font-weight:bold;">LOGIN TO SMARTCLASS</a>
+    </div>
+    <p style="font-size:13px;color:#6b7280;word-break:break-all;">Login link: ${frontendUrl}</p>
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:15px;">
+      <strong style="color:#c2410c;">Important:</strong> This is a temporary password. You must create a new password after your first successful login.
+    </div>
+    <p style="font-size:13px;color:#6b7280;margin-top:24px;">If you did not expect this account, please contact the school administrator.</p>
+    <p>Regards,<br><strong>SMARTCLASS Administration</strong></p>
+  </div>
+</body>
+</html>
     `.trim(),
   })
 }
@@ -158,9 +194,9 @@ router.post('/', requireAuth, requireRole('ADMIN'), async (req: Request, res: Re
     const data = z.object({
       fullName: nameSchema('Full Name'),
       email: emailSchema,
-      employeeId: z.union([employeeIdSchema, z.literal('')]).optional().default(''),
-      department: z.string().trim().max(100).optional().default(''),
-      contactNumber: optionalPhoneSchema.default(''),
+      employeeId: employeeIdSchema,
+      department: z.string().trim().min(1, 'Department is required.').max(100),
+      contactNumber: optionalPhoneSchema.refine(v => !!v?.trim(), 'Contact number is required.'),
     }).parse(req.body)
 
     const email = data.email.toLowerCase()
@@ -213,7 +249,7 @@ router.post('/', requireAuth, requireRole('ADMIN'), async (req: Request, res: Re
     if (profile) syncTeacherProfileCompatibility(profile)
 
     try {
-      await sendTeacherCredentialsEmail({
+      void sendTeacherCredentialsEmail({
         email,
         fullName: data.fullName,
         employeeId: data.employeeId || null,
@@ -326,7 +362,7 @@ router.post('/:id/reset-password', requireAuth, requireRole('ADMIN'), async (req
     syncUserCompatibility(user)
 
     try {
-      await sendTeacherCredentialsEmail({
+      void sendTeacherCredentialsEmail({
         email: teacher.email,
         fullName: teacher.fullName,
         employeeId: teacher.employeeId,

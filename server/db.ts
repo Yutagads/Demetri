@@ -1246,7 +1246,7 @@ async function performSaveDb() {
       }
     }, {
       maxWait: 15000,
-      timeout: 60000,
+      timeout: 180000,
     })
 
       console.log('[db] Non-destructive sync completed')
@@ -1575,8 +1575,9 @@ export async function seedDatabase() {
      *
      * Only synchronize settings that may have been introduced later.
      */
-    await saveDb()
-
+    // Supabase is already the source of truth after loadDb().
+    // Do not immediately run a full compatibility-store write-back here;
+    // it can take a long time and is unnecessary on startup.
     return
   }
 
