@@ -1,562 +1,1994 @@
 import { Router, Request, Response } from 'express'
 import bcrypt from 'bcryptjs'
-import crypto from 'crypto'
 import { z } from 'zod'
+import { v4 as uuidv4 } from 'uuid'
 import multer from 'multer'
-import nodemailer from 'nodemailer'
+import path from 'path'
+import fs from 'fs'
+import { fileURLToPath } from 'url'
+import { sendGmailEmail } from '../services/gmail.js'
+
 import { prisma } from '../prisma.js'
-import { requireAuth, requireRole } from '../middleware/auth.js'
-import { syncTeacherCompatibility, syncTeacherProfileCompatibility, syncUserCompatibility } from '../db.js'
-import { deleteImageReference, deleteImageByUrl, uploadImage } from '../services/imageStorage.js'
-import { emailSchema, nameSchema, optionalDateSchema, optionalPhoneSchema, optionalText, employeeIdSchema } from '../validation.js'
-import { ensureTeacherSubjectAssignment, getEffectiveTeacherAssignments } from '../services/teacherAssignments.js'
+import {
+  requireAuth,
+  requireRole,
+} from '../middleware/auth.js'
 
 const router = Router()
 
-const avatarUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
-})
+const __dirname = path.dirname(
+  fileURLToPath(import.meta.url),
+)
 
-const bannerUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 },
-})
+// ============================================================
+// UPLOAD DIRECTORIES
+// ============================================================
 
-const smtpUser = process.env.SMTP_USER?.trim()
-const smtpPass = process.env.SMTP_PASS?.trim()
-const configuredFrontendUrl = process.env.FRONTEND_URL?.trim() || 'http://localhost:5173'
-const frontendUrl = configuredFrontendUrl.replace(/\/$/, '').endsWith('/login')
-  ? configuredFrontendUrl.replace(/\/$/, '')
-  : `${configuredFrontendUrl.replace(/\/$/, '')}/login`
+const avatarDir = path.join(
+  __dirname,
+  '../../uploads/avatars',
+)
 
-const mailTransporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: smtpUser, pass: smtpPass },
-})
-
-function generateTempPassword() {
-  return crypto.randomBytes(9).toString('base64url')
+if (!fs.existsSync(avatarDir)) {
+  fs.mkdirSync(avatarDir, {
+    recursive: true,
+  })
 }
 
-function optionalDate(value?: string | null) {
-  if (!value || !value.trim()) return null
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) throw new Error(`Invalid date: ${value}`)
+// ============================================================
+// IMAGE FILTER
+// ============================================================
+
+const imageFilter = (
+  _req: any,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback,
+) => {
+  const allowedTypes = [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+  ]
+
+  if (
+    allowedTypes.includes(
+      file.mimetype,
+    )
+  ) {
+    cb(null, true)
+  } else {
+    cb(
+      new Error(
+        'Only image files are allowed',
+      ),
+    )
+  }
+}
+
+// ============================================================
+// AVATAR UPLOAD
+// ============================================================
+
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: (
+      _req,
+      _file,
+      cb,
+    ) => {
+      cb(null, avatarDir)
+    },
+
+    filename: (
+      _req,
+      file,
+      cb,
+    ) => {
+      cb(
+        null,
+        `${uuidv4()}${path.extname(
+          file.originalname,
+        ).toLowerCase()}`,
+      )
+    },
+  }),
+
+  limits: {
+    fileSize:
+      5 * 1024 * 1024,
+  },
+
+  fileFilter:
+    imageFilter,
+})
+
+// ============================================================
+// TEACHER CODE
+// ============================================================
+
+function generateTeacherCode() {
+  return (
+    'TC-' +
+    Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase()
+  )
+}
+
+// ============================================================
+// TEMPORARY PASSWORD
+// ============================================================
+
+function generateTempPassword() {
+  return (
+    Math.random()
+      .toString(36)
+      .substring(2, 10) +
+    Math.random()
+      .toString(36)
+      .substring(2, 6)
+      .toUpperCase()
+  )
+}
+
+// ============================================================
+// OPTIONAL DATE
+// ============================================================
+
+function optionalDate(
+  value?: string | null,
+) {
+  if (
+    !value ||
+    !value.trim()
+  ) {
+    return null
+  }
+
+  const date = new Date(
+    value,
+  )
+
+  if (
+    Number.isNaN(
+      date.getTime(),
+    )
+  ) {
+    throw new Error(
+      `Invalid date: ${value}`,
+    )
+  }
+
   return date
 }
 
-async function sendTeacherCredentialsEmail(params: {
-  email: string
-  fullName: string
-  employeeId?: string | null
-  tempPassword: string
-}) {
-  if (!smtpUser || !smtpPass) {
-    console.warn('[TEACHERS] SMTP is not configured; credentials were created but no email was sent.')
-    return
-  }
+// ============================================================
+// HTML ESCAPE
+// ============================================================
 
-  await mailTransporter.sendMail({
-    from: `"SMARTCLASS" <${smtpUser}>`,
-    to: params.email,
-    subject: 'SMARTCLASS Teacher Account Credentials',
-    replyTo: smtpUser,
-    headers: {
-      'X-Priority': '1',
-      Importance: 'high',
-    },
-    text: `
-Hello ${params.fullName},
+function escapeHtml(
+  value: string,
+) {
+  return value
+    .replace(
+      /&/g,
+      '&amp;',
+    )
+    .replace(
+      /</g,
+      '&lt;',
+    )
+    .replace(
+      />/g,
+      '&gt;',
+    )
+    .replace(
+      /"/g,
+      '&quot;',
+    )
+    .replace(
+      /'/g,
+      '&#039;',
+    )
+}
 
-Your SMARTCLASS teacher account has been created.
+// ============================================================
+// GMAIL EMAIL CONFIGURATION
+// ============================================================
 
-Email: ${params.email}
-${params.employeeId ? `Employee ID: ${params.employeeId}\n` : ''}Temporary Password: ${params.tempPassword}
+const configuredFrontendUrl =
+  process.env.FRONTEND_URL?.trim() ||
+  'https://exehighsmartclass.netlify.app'
 
-LOGIN TO SMARTCLASS:
-${frontendUrl}
+const frontendUrl =
+  configuredFrontendUrl.replace(/\/$/, '').endsWith('/login')
+    ? configuredFrontendUrl.replace(/\/$/, '')
+    : `${configuredFrontendUrl.replace(/\/$/, '')}/login`
 
-This is a temporary password. You will be required to create a new password after your first successful login.
+const schoolName =
+  'Exequiel R. Lina High School SMARTCLASS'
+
+async function sendTeacherCredentialsEmail(
+  params: {
+    email: string
+    fullName: string
+    employeeId?: string | null
+    tempPassword: string
+  },
+) {
+  const {
+    email,
+    fullName,
+    employeeId,
+    tempPassword,
+  } = params
+
+
+  // ----------------------------------------------------------
+  // LOGIN URL
+  // ----------------------------------------------------------
+
+  const loginUrl = frontendUrl
+
+  // ----------------------------------------------------------
+  // SEND EMAIL
+  // ----------------------------------------------------------
+
+  const info =
+    await sendGmailEmail({
+      to: email,
+      subject: 'SMARTCLASS Teacher Account Credentials',
+      text: `
+Hello ${fullName},
+
+Your ${schoolName} teacher account has been successfully created.
+
+EMP ID:
+${employeeId || '-'}
+
+Username:
+${email}
+
+Temporary Password:
+${tempPassword}
+
+Login:
+${loginUrl}
+
+IMPORTANT:
+This is a temporary password.
+
+You will be required to change your password when you log in for the first time.
+
+If you did not expect this account, please contact the school administrator.
 
 Regards,
-SMARTCLASS Administration
-    `.trim(),
-    html: `
+${schoolName} Administration
+        `.trim(),
+      html: `
 <!DOCTYPE html>
 <html>
-<body style="margin:0;padding:24px;background:#f3f4f6;font-family:Arial,sans-serif;color:#111827;">
-  <div style="max-width:560px;margin:auto;background:#ffffff;border-radius:12px;padding:32px;">
-    <h2 style="margin-top:0;">SMARTCLASS Teacher Account</h2>
-    <p>Hello ${params.fullName},</p>
-    <p>Your SMARTCLASS teacher account has been successfully created.</p>
-    <div style="background:#f9fafb;border-radius:10px;padding:20px;margin:20px 0;">
-      <p style="margin:0 0 10px;"><strong>Email:</strong> ${params.email}</p>
-      ${params.employeeId ? `<p style="margin:0 0 10px;"><strong>Employee ID:</strong> ${params.employeeId}</p>` : ''}
-      <p style="margin:0;"><strong>Temporary Password:</strong> ${params.tempPassword}</p>
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <title>
+    Exequiel R. Lina High School SMARTCLASS Teacher Account
+  </title>
+</head>
+
+<body
+  style="
+    margin:0;
+    padding:0;
+    background:#f3f4f6;
+    font-family:Arial,Helvetica,sans-serif;
+  "
+>
+  <div
+    style="
+      max-width:600px;
+      margin:40px auto;
+      padding:20px;
+    "
+  >
+    <div
+      style="
+        background:#ffffff;
+        border-radius:14px;
+        padding:35px;
+        box-shadow:0 4px 20px rgba(0,0,0,0.08);
+      "
+    >
+
+      <h1
+        style="
+          margin-top:0;
+          color:#1d4ed8;
+          text-align:center;
+        "
+      >
+        Exequiel R. Lina High School SMARTCLASS
+      </h1>
+
+      <h2
+        style="
+          color:#111827;
+          text-align:center;
+        "
+      >
+        Teacher Account Created
+      </h2>
+
+      <p
+        style="
+          color:#374151;
+          font-size:15px;
+          line-height:1.6;
+        "
+      >
+        Hello
+        <strong>
+          ${escapeHtml(fullName)}
+        </strong>,
+      </p>
+
+      <p
+        style="
+          color:#374151;
+          font-size:15px;
+          line-height:1.6;
+        "
+      >
+        Your SMARTCLASS teacher account
+        has been successfully created.
+      </p>
+
+      <div
+        style="
+          background:#f9fafb;
+          border:1px solid #e5e7eb;
+          border-radius:10px;
+          padding:20px;
+          margin:25px 0;
+        "
+      >
+
+        <p
+          style="
+            margin:0 0 12px 0;
+            color:#6b7280;
+            font-size:13px;
+          "
+        >
+          EMP ID
+        </p>
+
+        <p
+          style="
+            margin:0 0 20px 0;
+            color:#111827;
+            font-size:20px;
+            font-weight:bold;
+          "
+        >
+          ${escapeHtml(
+            employeeId || '-',
+          )}
+        </p>
+
+        <p
+          style="
+            margin:0 0 12px 0;
+            color:#6b7280;
+            font-size:13px;
+          "
+        >
+          USERNAME
+        </p>
+
+        <p
+          style="
+            margin:0 0 20px 0;
+            color:#111827;
+            font-size:20px;
+            font-weight:bold;
+          "
+        >
+          ${escapeHtml(email)}
+        </p>
+
+        <p
+          style="
+            margin:0 0 12px 0;
+            color:#6b7280;
+            font-size:13px;
+          "
+        >
+          TEMPORARY PASSWORD
+        </p>
+
+        <p
+          style="
+            margin:0;
+            color:#111827;
+            font-size:20px;
+            font-weight:bold;
+            letter-spacing:1px;
+          "
+        >
+          ${escapeHtml(
+            tempPassword,
+          )}
+        </p>
+      </div>
+
+      <div
+        style="
+          text-align:center;
+          margin:30px 0;
+        "
+      >
+        <a
+          href="${escapeHtml(
+            loginUrl,
+          )}"
+          style="
+            display:inline-block;
+            background:#2563eb;
+            color:#ffffff;
+            text-decoration:none;
+            padding:13px 25px;
+            border-radius:8px;
+            font-weight:bold;
+          "
+        >
+          LOGIN TO SMARTCLASS
+        </a>
+      </div>
+
+      <div
+        style="
+          background:#fff7ed;
+          border:1px solid #fed7aa;
+          border-radius:8px;
+          padding:15px;
+          margin-top:25px;
+        "
+      >
+
+        <strong
+          style="
+            color:#c2410c;
+          "
+        >
+          Important:
+        </strong>
+
+        <p
+          style="
+            color:#7c2d12;
+            margin:8px 0 0 0;
+            font-size:14px;
+            line-height:1.5;
+          "
+        >
+          This is a temporary password.
+          You will be required to change
+          your password after your first
+          login.
+        </p>
+      </div>
+
+      <p
+        style="
+          color:#6b7280;
+          font-size:13px;
+          line-height:1.5;
+          margin-top:30px;
+        "
+      >
+        If you did not expect this account,
+        please contact the school
+        administrator.
+      </p>
+
+      <p
+        style="
+          color:#374151;
+          font-size:14px;
+          margin-top:25px;
+        "
+      >
+        Regards,<br />
+        <strong>
+          Exequiel R. Lina High School SMARTCLASS Administration
+        </strong>
+      </p>
+
     </div>
-    <div style="text-align:center;margin:28px 0;">
-      <a href="${frontendUrl}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:14px 24px;border-radius:8px;font-weight:bold;">LOGIN TO SMARTCLASS</a>
-    </div>
-    <p style="font-size:13px;color:#6b7280;word-break:break-all;">Login link: ${frontendUrl}</p>
-    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:15px;">
-      <strong style="color:#c2410c;">Important:</strong> This is a temporary password. You must create a new password after your first successful login.
-    </div>
-    <p style="font-size:13px;color:#6b7280;margin-top:24px;">If you did not expect this account, please contact the school administrator.</p>
-    <p>Regards,<br><strong>SMARTCLASS Administration</strong></p>
   </div>
 </body>
 </html>
-    `.trim(),
-  })
+        `.trim(),
+    })
+
+  console.log(
+    `✅ Teacher credentials email sent to ${email}`,
+  )
+
+  console.log(
+    `📨 Message ID: ${info.messageId}`,
+  )
+
+  return info
 }
 
-async function getTeacher(id: string) {
-  const teacher = await prisma.teacher.findUnique({
-    where: { id },
+// ============================================================
+// GET TEACHER
+// ============================================================
+
+async function getTeacher(
+  id: string,
+) {
+  return prisma.teacher.findUnique({
+    where: {
+      id,
+    },
+
     include: {
       user: true,
+
       profile: true,
-      classSchedules: {
+
+      subjectAssignments: {
+        orderBy: {
+          createdAt:
+            'desc',
+        },
+
         include: {
-          subject: true,
-          section: { include: { gradeLevel: true, strand: true } },
           academicYear: true,
+          subject: true,
+          section: true,
         },
       },
     },
   })
+}
 
-  if (!teacher) return null
+// ============================================================
+// FORMAT TEACHER
+// ============================================================
+
+function formatTeacher(
+  teacher: any,
+  includeUser = true,
+) {
+  if (!teacher) {
+    return null
+  }
+
+  const {
+    user,
+    profile,
+    subjectAssignments,
+    ...base
+  } = teacher
 
   return {
-    ...teacher,
-    subjectAssignments: await getEffectiveTeacherAssignments(teacher.id),
+    ...base,
+
+    ...(includeUser
+      ? {
+          user,
+        }
+      : {}),
+
+    profile:
+      profile ?? null,
+
+    subjectAssignments:
+      subjectAssignments ??
+      [],
   }
 }
 
-function duplicateEmail(res: Response) {
-  return res.status(409).json({
-    error: 'An account with this email already exists.',
-  })
-}
+// ============================================================
+// ADMIN: LIST TEACHERS
+// ============================================================
 
-// GET /api/teachers
-router.get('/', requireAuth, requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const search = String(req.query.search || '').trim()
-    const status = String(req.query.status || '').trim()
+router.get(
+  '/',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const search =
+        req.query.search
+          ? String(
+              req.query.search,
+            ).trim()
+          : ''
 
-    const teachers = await prisma.teacher.findMany({
-      where: {
-        ...(status ? { status } : {}),
-        ...(search
-          ? {
-              OR: [
-                { fullName: { contains: search, mode: 'insensitive' } },
-                { email: { contains: search, mode: 'insensitive' } },
-                { employeeId: { contains: search, mode: 'insensitive' } },
-              ],
-            }
-          : {}),
-      },
-      orderBy: { fullName: 'asc' },
-      include: {
-        user: true,
-        profile: true,
-        subjectAssignments: {
-          include: {
-            subject: true,
-            section: { include: { gradeLevel: true, strand: true } },
-            academicYear: true,
+      const status =
+        req.query.status
+          ? String(
+              req.query.status,
+            )
+          : undefined
+
+      const teachers =
+        await prisma.teacher.findMany({
+          where: {
+            ...(status
+              ? {
+                  status,
+                }
+              : {}),
+
+            ...(search
+              ? {
+                  OR: [
+                    {
+                      fullName: {
+                        contains:
+                          search,
+                        mode:
+                          'insensitive',
+                      },
+                    },
+
+                    {
+                      email: {
+                        contains:
+                          search,
+                        mode:
+                          'insensitive',
+                      },
+                    },
+
+                    {
+                      employeeId: {
+                        contains:
+                          search,
+                        mode:
+                          'insensitive',
+                      },
+                    },
+                  ],
+                }
+              : {}),
           },
-        },
-      },
-    })
 
-    const teachersWithAssignments = await Promise.all(
-      teachers.map(async teacher => ({
-        ...teacher,
-        subjectAssignments: await getEffectiveTeacherAssignments(teacher.id),
-      })),
-    )
+          orderBy: {
+            fullName: 'asc',
+          },
 
-    res.json(teachersWithAssignments)
-  } catch (err) {
-    console.error('[TEACHERS] Failed to list teachers:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
+          include: {
+            user: true,
+
+            profile: true,
+
+            subjectAssignments: {
+              orderBy: {
+                createdAt:
+                  'desc',
+              },
+
+              include: {
+                academicYear: true,
+                subject: true,
+                section: true,
+              },
+            },
+          },
+        })
+
+      return res.json(
+        teachers.map(
+          teacher =>
+            formatTeacher(
+              teacher,
+              true,
+            ),
+        ),
+      )
+    } catch (err) {
+      console.error(
+        '[TEACHERS] List teachers error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// ADMIN: CREATE TEACHER
+// ============================================================
+
+router.post(
+  '/',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      // --------------------------------------------------------
+      // VALIDATE REQUEST
+      // --------------------------------------------------------
+
+      const data =
+        z
+          .object({
+            fullName:
+              z.string().min(1),
+
+            email:
+              z.string().email(),
+
+            employeeId:
+              z.string().optional(),
+
+            department:
+              z.string().optional(),
+
+            contactNumber:
+              z.string().optional(),
+
+            gender:
+              z.string().optional(),
+
+            birthDate:
+              z.string().optional(),
+          })
+          .parse(req.body)
+
+      // --------------------------------------------------------
+      // NORMALIZE DATA
+      // --------------------------------------------------------
+
+      const email =
+        data.email
+          .trim()
+          .toLowerCase()
+
+      const fullName =
+        data.fullName.trim()
+
+      const employeeId =
+        data.employeeId
+          ?.trim() || null
+
+      // --------------------------------------------------------
+      // DUPLICATE CHECK
+      // --------------------------------------------------------
+
+      const [
+        existingTeacher,
+        existingUser,
+      ] = await Promise.all([
+        prisma.teacher.findFirst({
+          where: {
+            OR: [
+              {
+                email,
+              },
+
+              ...(employeeId
+                ? [
+                    {
+                      employeeId,
+                    },
+                  ]
+                : []),
+            ],
+          },
+        }),
+
+        prisma.user.findFirst({
+          where: {
+            email,
+          },
+        }),
+      ])
+
+      if (
+        existingTeacher ||
+        existingUser
+      ) {
+        return res.status(400).json({
+          error:
+            'Teacher email or employee ID already exists',
+        })
+      }
+
+      // --------------------------------------------------------
+      // GENERATE TEMPORARY PASSWORD
+      // --------------------------------------------------------
+
+      const tempPassword =
+        generateTempPassword()
+
+      const passwordHash =
+        await bcrypt.hash(
+          tempPassword,
+          12,
+        )
+
+      // --------------------------------------------------------
+      // GENERATE IDS
+      // --------------------------------------------------------
+
+      const userId =
+        uuidv4()
+
+      const teacherId =
+        uuidv4()
+
+      // --------------------------------------------------------
+      // CREATE DATABASE RECORDS
+      // --------------------------------------------------------
+
+      const teacher =
+        await prisma.$transaction(
+          async tx => {
+            // --------------------------------------------------
+            // CREATE USER
+            // --------------------------------------------------
+
+            await tx.user.create({
+              data: {
+                id: userId,
+
+                email,
+
+                passwordHash,
+
+                role: 'TEACHER',
+
+                status: 'active',
+
+                isFirstLogin:
+                  true,
+              },
+            })
+
+            // --------------------------------------------------
+            // CREATE TEACHER
+            // --------------------------------------------------
+
+          await tx.teacher.create({
+  data: {
+    id: teacherId,
+    userId,
+    fullName: data.fullName.trim(),
+    email,
+    employeeId: data.employeeId?.trim() || null,
+    department: data.department?.trim() || null,
+    contactNumber: data.contactNumber?.trim() || null,
+    status: 'active',
+  },
 })
 
-// POST /api/teachers
-router.post('/', requireAuth, requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const data = z.object({
-      fullName: nameSchema('Full Name'),
-      email: emailSchema,
-      employeeId: employeeIdSchema,
-      department: z.string().trim().min(1, 'Department is required.').max(100),
-      contactNumber: optionalPhoneSchema.refine(v => !!v?.trim(), 'Contact number is required.'),
-    }).parse(req.body)
+            // --------------------------------------------------
+            // RETURN COMPLETE TEACHER
+            // --------------------------------------------------
 
-    const email = data.email.toLowerCase()
+            return tx.teacher.findUnique(
+              {
+                where: {
+                  id: teacherId,
+                },
 
-    const existing = await prisma.user.findUnique({ where: { email } })
-    if (existing) return duplicateEmail(res)
+                include: {
+                  user: true,
 
-    if (data.employeeId) {
-      const existingEmployee = await prisma.teacher.findUnique({ where: { employeeId: data.employeeId } })
-      if (existingEmployee) {
-        return res.status(409).json({ error: 'An account with this employee ID already exists.' })
+                  profile: true,
+
+                  subjectAssignments: {
+                    orderBy: {
+                      createdAt:
+                        'desc',
+                    },
+
+                    include: {
+                      academicYear:
+                        true,
+
+                      subject:
+                        true,
+
+                      section:
+                        true,
+                    },
+                  },
+                },
+              },
+            )
+          },
+        )
+
+      // --------------------------------------------------------
+      // CHECK CREATED TEACHER
+      // --------------------------------------------------------
+
+      if (!teacher) {
+        return res.status(500).json({
+          error:
+            'Teacher was not created',
+        })
       }
+
+      // --------------------------------------------------------
+      // SEND EMAIL AFTER DATABASE CREATION
+      // --------------------------------------------------------
+
+      let emailSent =
+        false
+
+      let emailError:
+        | string
+        | null = null
+
+      try {
+        await sendTeacherCredentialsEmail(
+          {
+            email,
+
+            fullName,
+
+            employeeId,
+
+            tempPassword,
+          },
+        )
+
+        emailSent =
+          true
+      } catch (
+        mailError: any
+      ) {
+        console.error(
+          '[TEACHERS] Teacher credential email failed:',
+          mailError,
+        )
+
+        emailError =
+          mailError?.message ||
+          'Failed to send email'
+      }
+
+      // --------------------------------------------------------
+      // RESPONSE
+      // --------------------------------------------------------
+
+      return res.status(201).json({
+        success: true,
+
+        teacher:
+          formatTeacher(
+            teacher,
+            true,
+          ),
+
+        emailSent,
+
+        emailError,
+
+        // TEMPORARILY RETURN PASSWORD
+        // This allows admin to recover the
+        // password if Gmail fails.
+        tempPassword,
+      })
+    } catch (
+      err: any
+    ) {
+      // --------------------------------------------------------
+      // ZOD VALIDATION ERROR
+      // --------------------------------------------------------
+
+      if (
+        err?.name ===
+        'ZodError'
+      ) {
+        return res.status(400).json({
+          error:
+            err.issues?.[0]
+              ?.message ??
+            err.message ??
+            'Invalid request',
+        })
+      }
+
+      // --------------------------------------------------------
+      // DATABASE / SERVER ERROR
+      // --------------------------------------------------------
+
+      console.error(
+        '[TEACHERS] Create teacher error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
     }
+  },
+)
 
-    const tempPassword = generateTempPassword()
-    const passwordHash = await bcrypt.hash(tempPassword, 12)
+// ============================================================
+// GET SINGLE TEACHER
+// ============================================================
 
-    const created = await prisma.$transaction(async tx => {
-      const user = await tx.user.create({
+router.get(
+  '/:id',
+  requireAuth,
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const teacher =
+        await getTeacher(
+          req.params.id,
+        )
+
+      if (!teacher) {
+        return res.status(404).json({
+          error:
+            'Teacher not found',
+        })
+      }
+
+      // --------------------------------------------------------
+      // TEACHER CAN ONLY VIEW OWN ACCOUNT
+      // --------------------------------------------------------
+
+      if (
+        req.user!.role ===
+          'TEACHER' &&
+        teacher.userId !==
+          req.user!.userId
+      ) {
+        return res.status(403).json({
+          error: 'Forbidden',
+        })
+      }
+
+      return res.json(
+        formatTeacher(
+          teacher,
+          true,
+        ),
+      )
+    } catch (err) {
+      console.error(
+        '[TEACHERS] Get teacher error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// UPDATE TEACHER
+// ============================================================
+
+router.put(
+  '/:id',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const data =
+        z
+          .object({
+            fullName:
+              z.string().optional(),
+
+            department:
+              z.string().optional(),
+
+            contactNumber:
+              z.string().optional(),
+
+            employeeId:
+              z.string().optional(),
+          })
+          .parse(req.body)
+
+      // --------------------------------------------------------
+      // FIND TEACHER
+      // --------------------------------------------------------
+
+      const teacher =
+        await prisma.teacher.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+          },
+        )
+
+      if (!teacher) {
+        return res.status(404).json({
+          error: 'Not found',
+        })
+      }
+
+      // --------------------------------------------------------
+      // CHECK EMPLOYEE ID DUPLICATE
+      // --------------------------------------------------------
+
+      if (
+        data.employeeId !==
+        undefined
+      ) {
+        const employeeId =
+          data.employeeId.trim()
+
+        if (employeeId) {
+          const existing =
+            await prisma.teacher.findFirst(
+              {
+                where: {
+                  employeeId,
+
+                  NOT: {
+                    id: teacher.id,
+                  },
+                },
+              },
+            )
+
+          if (existing) {
+            return res.status(400).json({
+              error:
+                'Employee ID already exists',
+            })
+          }
+        }
+      }
+
+      // --------------------------------------------------------
+      // UPDATE TEACHER
+      // --------------------------------------------------------
+
+      const updated =
+        await prisma.teacher.update(
+          {
+            where: {
+              id: req.params.id,
+            },
+
+            data: {
+              ...(data.fullName !==
+              undefined
+                ? {
+                    fullName:
+                      data.fullName.trim(),
+                  }
+                : {}),
+
+              ...(data.department !==
+              undefined
+                ? {
+                    department:
+                      data.department.trim() ||
+                      null,
+                  }
+                : {}),
+
+              ...(data.contactNumber !==
+              undefined
+                ? {
+                    contactNumber:
+                      data.contactNumber.trim() ||
+                      null,
+                  }
+                : {}),
+
+              ...(data.employeeId !==
+              undefined
+                ? {
+                    employeeId:
+                      data.employeeId.trim() ||
+                      null,
+                  }
+                : {}),
+            },
+
+            include: {
+              user: true,
+
+              profile: true,
+
+              subjectAssignments: {
+                orderBy: {
+                  createdAt:
+                    'desc',
+                },
+
+                include: {
+                  academicYear:
+                    true,
+
+                  subject:
+                    true,
+
+                  section:
+                    true,
+                },
+              },
+            },
+          },
+        )
+
+      return res.json(
+        formatTeacher(
+          updated,
+          true,
+        ),
+      )
+    } catch (
+      err: any
+    ) {
+      // --------------------------------------------------------
+      // ZOD ERROR
+      // --------------------------------------------------------
+
+      if (
+        err?.name ===
+        'ZodError'
+      ) {
+        return res.status(400).json({
+          error:
+            err.issues?.[0]
+              ?.message ??
+            err.message ??
+            'Invalid request',
+        })
+      }
+
+      console.error(
+        '[TEACHERS] Update teacher error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// ARCHIVE TEACHER
+// ============================================================
+
+router.patch(
+  '/:id/archive',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const teacher =
+        await prisma.teacher.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+          },
+        )
+
+      if (!teacher) {
+        return res.status(404).json({
+          error: 'Not found',
+        })
+      }
+
+      await prisma.$transaction([
+        prisma.teacher.update({
+          where: {
+            id: teacher.id,
+          },
+
+          data: {
+            status:
+              'archived',
+          },
+        }),
+
+        prisma.user.update({
+          where: {
+            id: teacher.userId,
+          },
+
+          data: {
+            status:
+              'inactive',
+          },
+        }),
+      ])
+
+      return res.json({
+        success: true,
+      })
+    } catch (err) {
+      console.error(
+        '[TEACHERS] Archive teacher error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// RESTORE TEACHER
+// ============================================================
+
+router.patch(
+  '/:id/restore',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const teacher =
+        await prisma.teacher.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+          },
+        )
+
+      if (!teacher) {
+        return res.status(404).json({
+          error: 'Not found',
+        })
+      }
+
+      await prisma.$transaction([
+        prisma.teacher.update({
+          where: {
+            id: teacher.id,
+          },
+
+          data: {
+            status:
+              'active',
+          },
+        }),
+
+        prisma.user.update({
+          where: {
+            id: teacher.userId,
+          },
+
+          data: {
+            status:
+              'active',
+          },
+        }),
+      ])
+
+      return res.json({
+        success: true,
+      })
+    } catch (err) {
+      console.error(
+        '[TEACHERS] Restore teacher error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// ASSIGN SUBJECT / SECTION
+// ============================================================
+
+router.post(
+  '/:id/assignments',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const data =
+        z
+          .object({
+            subjectId:
+              z.string(),
+
+            sectionId:
+              z.string(),
+
+            academicYearId:
+              z.string(),
+          })
+          .parse(req.body)
+
+      // --------------------------------------------------------
+      // FIND TEACHER
+      // --------------------------------------------------------
+
+      const teacher =
+        await prisma.teacher.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+          },
+        )
+
+      if (!teacher) {
+        return res.status(404).json({
+          error:
+            'Teacher not found',
+        })
+      }
+
+      // --------------------------------------------------------
+      // CREATE ASSIGNMENT
+      // --------------------------------------------------------
+
+      const assignment =
+        await prisma.teacherSubjectAssignment.create(
+          {
+            data: {
+              id: uuidv4(),
+
+              teacherId:
+                teacher.id,
+
+              subjectId:
+                data.subjectId,
+
+              sectionId:
+                data.sectionId,
+
+              academicYearId:
+                data.academicYearId,
+            },
+
+            include: {
+              subject: true,
+
+              section: true,
+
+              academicYear:
+                true,
+            },
+          },
+        )
+
+      return res.json(
+        assignment,
+      )
+    } catch (
+      err: any
+    ) {
+      if (
+        err?.name ===
+        'ZodError'
+      ) {
+        return res.status(400).json({
+          error:
+            err.issues?.[0]
+              ?.message ??
+            err.message ??
+            'Invalid request',
+        })
+      }
+
+      console.error(
+        '[TEACHERS] Assignment error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// RESET TEACHER PASSWORD
+// ============================================================
+
+router.post(
+  '/:id/reset-password',
+  requireAuth,
+  requireRole('ADMIN'),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      // --------------------------------------------------------
+      // FIND TEACHER
+      // --------------------------------------------------------
+
+      const teacher =
+        await prisma.teacher.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+          },
+        )
+
+      if (!teacher) {
+        return res.status(404).json({
+          error: 'Not found',
+        })
+      }
+
+      // --------------------------------------------------------
+      // GENERATE NEW TEMP PASSWORD
+      // --------------------------------------------------------
+
+      const tempPassword =
+        generateTempPassword()
+
+      const passwordHash =
+        await bcrypt.hash(
+          tempPassword,
+          12,
+        )
+
+      // --------------------------------------------------------
+      // UPDATE USER ACCOUNT
+      // --------------------------------------------------------
+
+      await prisma.user.update({
+        where: {
+          id: teacher.userId,
+        },
+
         data: {
-          email,
           passwordHash,
-          role: 'TEACHER',
-          status: 'active',
+          // A reset password is temporary, so the teacher
+          // must be required to set a new personal password
+          // on the next login.
           isFirstLogin: true,
         },
       })
 
-      const teacher = await tx.teacher.create({
-        data: {
-          id: crypto.randomUUID(),
-          userId: user.id,
-          employeeId: data.employeeId || null,
-          fullName: data.fullName,
-          email,
-          department: data.department || null,
-          contactNumber: data.contactNumber || null,
-          status: 'active',
-        },
-        include: { profile: true, user: true },
-      })
+      // --------------------------------------------------------
+      // SEND EMAIL
+      // --------------------------------------------------------
 
-      await tx.teacherProfile.create({ data: { id: crypto.randomUUID(), teacherId: teacher.id } })
-      return { user, teacher }
-    })
+      let emailSent =
+        false
 
-    syncUserCompatibility(created.user)
-    syncTeacherCompatibility(created.teacher)
-    const profile = await prisma.teacherProfile.findUnique({ where: { teacherId: created.teacher.id } })
-    if (profile) syncTeacherProfileCompatibility(profile)
+      let emailError:
+        | string
+        | null = null
 
-    try {
-      void sendTeacherCredentialsEmail({
-        email,
-        fullName: data.fullName,
-        employeeId: data.employeeId || null,
-        tempPassword,
-      })
-    } catch (mailError) {
-      console.error('[TEACHERS] Account created but credential email failed:', mailError)
-    }
-
-    res.status(201).json({
-      ...created.teacher,
-      tempPassword,
-      email,
-    })
-  } catch (err: any) {
-    if (err?.code === 'P2002') {
-      const target = Array.isArray(err.meta?.target) ? err.meta.target.join(',') : String(err.meta?.target || '')
-      if (target.includes('email')) return duplicateEmail(res)
-      if (target.includes('employeeId')) return res.status(409).json({ error: 'An account with this employee ID already exists.' })
-    }
-    if (err?.name === 'ZodError') return res.status(400).json({ error: err.issues?.[0]?.message || 'Invalid request.' })
-    console.error('[TEACHERS] Failed to create teacher:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// GET /api/teachers/:id
-router.get('/:id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const teacher = await getTeacher(req.params.id)
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    if (req.user!.role === 'TEACHER' && teacher.userId !== req.user!.userId) {
-      return res.status(403).json({ error: 'Forbidden' })
-    }
-
-    res.json(teacher)
-  } catch (err) {
-    console.error('[TEACHERS] Failed to load teacher:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// PUT /api/teachers/:id
-router.put('/:id', requireAuth, requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const data = z.object({
-      fullName: nameSchema('Full Name').optional(),
-      department: z.string().trim().max(100).optional(),
-      contactNumber: optionalPhoneSchema,
-    }).parse(req.body)
-
-    const teacher = await prisma.teacher.findUnique({ where: { id: req.params.id } })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const updated = await prisma.teacher.update({
-      where: { id: teacher.id },
-      data: {
-        ...(data.fullName !== undefined ? { fullName: data.fullName } : {}),
-        ...(data.department !== undefined ? { department: data.department || null } : {}),
-        ...(data.contactNumber !== undefined ? { contactNumber: data.contactNumber || null } : {}),
-      },
-      include: { user: true, profile: true },
-    })
-
-    syncTeacherCompatibility(updated)
-    res.json(updated)
-  } catch (err: any) {
-    if (err?.name === 'ZodError') return res.status(400).json({ error: err.issues?.[0]?.message || 'Invalid request.' })
-    console.error('[TEACHERS] Failed to update teacher:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// PATCH /api/teachers/:id/archive
-router.patch('/:id/archive', requireAuth, requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const teacher = await prisma.teacher.findUnique({ where: { id: req.params.id } })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const updated = await prisma.$transaction(async tx => {
-      const t = await tx.teacher.update({ where: { id: teacher.id }, data: { status: 'archived' }, include: { user: true, profile: true } })
-      await tx.user.update({ where: { id: teacher.userId }, data: { status: 'inactive' } })
-      return t
-    })
-
-    syncTeacherCompatibility(updated)
-    if (updated.user) syncUserCompatibility(updated.user)
-    res.json({ success: true })
-  } catch (err) {
-    console.error('[TEACHERS] Failed to archive teacher:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// POST /api/teachers/:id/reset-password
-router.post('/:id/reset-password', requireAuth, requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const teacher = await prisma.teacher.findUnique({ where: { id: req.params.id }, include: { user: true } })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const tempPassword = generateTempPassword()
-    const passwordHash = await bcrypt.hash(tempPassword, 12)
-
-    const user = await prisma.user.update({
-      where: { id: teacher.userId },
-      data: { passwordHash, isFirstLogin: true, failedLoginAttempts: 0, lockedUntil: null },
-    })
-
-    syncUserCompatibility(user)
-
-    try {
-      void sendTeacherCredentialsEmail({
-        email: teacher.email,
-        fullName: teacher.fullName,
-        employeeId: teacher.employeeId,
-        tempPassword,
-      })
-    } catch (mailError) {
-      console.error('[TEACHERS] Password reset email failed:', mailError)
-    }
-
-    res.json({ success: true, email: teacher.email, tempPassword })
-  } catch (err) {
-    console.error('[TEACHERS] Failed to reset password:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// POST /api/teachers/:id/assignments
-router.post('/:id/assignments', requireAuth, requireRole('ADMIN'), async (req: Request, res: Response) => {
-  try {
-    const data = z.object({
-      subjectId: z.string().min(1),
-      sectionId: z.string().min(1),
-      academicYearId: z.string().min(1),
-    }).parse(req.body)
-
-    const teacher = await prisma.teacher.findUnique({ where: { id: req.params.id } })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const assignment = await ensureTeacherSubjectAssignment({
-      teacherId: teacher.id,
-      ...data,
-    })
-
-    res.status(201).json(assignment)
-  } catch (err: any) {
-    if (err?.code === 'P2002') return res.status(409).json({ error: 'This teacher assignment conflicts with an existing record.' })
-    if (err?.name === 'ZodError') return res.status(400).json({ error: err.issues?.[0]?.message || 'Invalid request.' })
-    console.error('[TEACHERS] Failed to add assignment:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// PATCH /api/teachers/:id/profile
-router.patch('/:id/profile', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const teacher = await prisma.teacher.findUnique({ where: { id: req.params.id }, include: { profile: true } })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const isOwner = req.user!.role === 'TEACHER' && teacher.userId === req.user!.userId
-    if (!isOwner && req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' })
-
-    const data = z.object({
-      gender: optionalText('Gender', 30),
-      birthDate: optionalDateSchema('Birth date'),
-      contactNumber: optionalPhoneSchema,
-      department: z.string().trim().max(100).optional(),
-    }).parse(req.body)
-
-    const profile = await prisma.teacherProfile.upsert({
-      where: { teacherId: teacher.id },
-      create: {
-        id: crypto.randomUUID(),
-        teacherId: teacher.id,
-        gender: data.gender || null,
-        birthDate: optionalDate(data.birthDate),
-      },
-      update: {
-        ...(data.gender !== undefined ? { gender: data.gender || null } : {}),
-        ...(data.birthDate !== undefined ? { birthDate: optionalDate(data.birthDate) } : {}),
-      },
-    })
-
-    syncTeacherProfileCompatibility(profile)
-
-    if (data.contactNumber !== undefined || data.department !== undefined) {
-      const updatedTeacher = await prisma.teacher.update({
-        where: { id: teacher.id },
-        data: {
-          ...(data.contactNumber !== undefined ? { contactNumber: data.contactNumber || null } : {}),
-          ...(data.department !== undefined ? { department: data.department || null } : {}),
-        },
-      })
-      syncTeacherCompatibility(updatedTeacher)
-    }
-
-    const updated = await getTeacher(teacher.id)
-    res.json(updated)
-  } catch (err: any) {
-    if (err?.name === 'ZodError') return res.status(400).json({ error: err.issues?.[0]?.message || 'Invalid request.' })
-    console.error('[TEACHERS] Failed to update teacher profile:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// POST /api/teachers/:id/avatar
-router.post('/:id/avatar', requireAuth, avatarUpload.single('avatar'), async (req: Request, res: Response) => {
-  try {
-    const teacher = await prisma.teacher.findFirst({
-      where: {
-        OR: [{ id: req.params.id }, { userId: req.params.id }],
-      },
-      include: { profile: true },
-    })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const isOwner = (req.user!.role === 'TEACHER' && (teacher.userId === req.user!.userId || teacher.id === req.user!.userId)) || req.user!.role === 'ADMIN'
-    if (!isOwner) return res.status(403).json({ error: 'Forbidden' })
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
-
-    const stored = await uploadImage({
-      buffer: req.file.buffer,
-      folder: 'employees',
-      claimedMimeType: req.file.mimetype,
-      maxBytes: 5 * 1024 * 1024,
-    })
-
-    try {
-      const profile = await prisma.teacherProfile.upsert({
-        where: { teacherId: teacher.id },
-        create: { id: crypto.randomUUID(), teacherId: teacher.id, profilePicture: stored.url },
-        update: { profilePicture: stored.url },
-      })
-
-      syncTeacherProfileCompatibility(profile)
-
-      if (teacher.profile?.profilePicture && teacher.profile.profilePicture !== stored.url) {
-        await deleteImageReference(teacher.profile.profilePicture).catch(error => console.warn('[TEACHERS] Failed to delete old avatar:', error))
-      }
-
-      const updated = await getTeacher(teacher.id)
-      res.json(updated)
-    } catch (dbError) {
-      await deleteImageByUrl(stored.url).catch(() => undefined)
-      throw dbError
-    }
-  } catch (err) {
-    console.error('[TEACHERS] Failed to upload avatar:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
-
-// POST /api/teachers/:id/banner
-router.post('/:id/banner', requireAuth, bannerUpload.single('banner'), async (req: Request, res: Response) => {
-  try {
-    const teacher = await prisma.teacher.findFirst({
-      where: {
-        OR: [{ id: req.params.id }, { userId: req.params.id }],
-      },
-      include: { profile: true },
-    })
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found' })
-
-    const isOwner = (req.user!.role === 'TEACHER' && (teacher.userId === req.user!.userId || teacher.id === req.user!.userId)) || req.user!.role === 'ADMIN'
-    if (!isOwner) return res.status(403).json({ error: 'Forbidden' })
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
-
-    const stored = await uploadImage({
-      buffer: req.file.buffer,
-      folder: 'employees',
-      claimedMimeType: req.file.mimetype,
-      maxBytes: 8 * 1024 * 1024,
-    })
-
-    const oldBanner = (teacher.profile as any)?.bannerImage
-
-    try {
-      let profile: any
       try {
-        profile = await (prisma.teacherProfile as any).upsert({
-          where: { teacherId: teacher.id },
-          create: { id: crypto.randomUUID(), teacherId: teacher.id, bannerImage: stored.url },
-          update: { bannerImage: stored.url },
-        })
-      } catch {
-        // Fallback for in-memory / non-migrated column
-        profile = { id: teacher.profile?.id || crypto.randomUUID(), teacherId: teacher.id, bannerImage: stored.url }
+        await sendTeacherCredentialsEmail(
+          {
+            email:
+              teacher.email,
+
+            fullName:
+              teacher.fullName,
+
+            employeeId:
+              teacher.employeeId,
+
+            tempPassword,
+          },
+        )
+
+        emailSent =
+          true
+      } catch (
+        mailError: any
+      ) {
+        console.error(
+          '[TEACHERS] Password reset email failed:',
+          mailError,
+        )
+
+        emailError =
+          mailError?.message ||
+          'Failed to send email'
       }
 
-      syncTeacherProfileCompatibility(profile)
+      // --------------------------------------------------------
+      // RESPONSE
+      // --------------------------------------------------------
 
-      if (oldBanner && oldBanner !== stored.url) {
-        await deleteImageReference(oldBanner).catch(error => console.warn('[TEACHERS] Failed to delete old banner:', error))
-      }
+      return res.json({
+        success: true,
 
-      const updated = await getTeacher(teacher.id)
-      res.json(updated)
-    } catch (dbError) {
-      await deleteImageByUrl(stored.url).catch(() => undefined)
-      throw dbError
+        email:
+          teacher.email,
+
+        emailSent,
+
+        emailError,
+
+        tempPassword,
+      })
+    } catch (
+      err: any
+    ) {
+      console.error(
+        '[TEACHERS] Reset password error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
     }
-  } catch (err) {
-    console.error('[TEACHERS] Failed to upload banner:', err)
-    res.status(500).json({ error: 'Server error' })
-  }
-})
+  },
+)
+
+// ============================================================
+// UPDATE TEACHER PROFILE
+// ============================================================
+
+router.patch(
+  '/:id/profile',
+  requireAuth,
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const teacher =
+        await prisma.teacher.findUnique({
+          where: {
+            id: req.params.id,
+          },
+        })
+
+      if (!teacher) {
+        return res.status(404).json({
+          error:
+            'Teacher not found',
+        })
+      }
+
+      const isOwner =
+        req.user!.role ===
+          'TEACHER' &&
+        teacher.userId ===
+          req.user!.userId
+
+      if (
+        !isOwner &&
+        req.user!.role !==
+          'ADMIN'
+      ) {
+        return res.status(403).json({
+          error: 'Forbidden',
+        })
+      }
+
+      const data =
+        z
+          .object({
+            gender:
+              z.string().optional(),
+
+            birthDate:
+              z.string().optional(),
+
+            contactNumber:
+              z.string().optional(),
+          })
+          .parse(req.body)
+
+      await prisma.$transaction(
+        async tx => {
+          // ----------------------------------------------------
+          // UPDATE TEACHER
+          // ----------------------------------------------------
+
+          await tx.teacher.update({
+            where: {
+              id: teacher.id,
+            },
+
+            data: {
+              ...(data.contactNumber !==
+              undefined
+                ? {
+                    contactNumber:
+                      data.contactNumber ||
+                      null,
+                  }
+                : {}),
+            },
+          })
+
+          // ----------------------------------------------------
+          // UPDATE / CREATE PROFILE
+          // ----------------------------------------------------
+
+          await tx.teacherProfile.upsert({
+            where: {
+              teacherId:
+                teacher.id,
+            },
+
+            create: {
+              id: uuidv4(),
+
+              teacherId:
+                teacher.id,
+
+              gender:
+                data.gender ||
+                null,
+
+              birthDate:
+                optionalDate(
+                  data.birthDate,
+                ),
+            },
+
+            update: {
+              ...(data.gender !==
+              undefined
+                ? {
+                    gender:
+                      data.gender ||
+                      null,
+                  }
+                : {}),
+
+              ...(data.birthDate !==
+              undefined
+                ? {
+                    birthDate:
+                      optionalDate(
+                        data.birthDate,
+                      ),
+                  }
+                : {}),
+            },
+          })
+        },
+      )
+
+      const updated =
+        await getTeacher(
+          teacher.id,
+        )
+
+      return res.json(
+        formatTeacher(
+          updated,
+          false,
+        ),
+      )
+    } catch (
+      err: any
+    ) {
+      if (
+        err?.name ===
+        'ZodError'
+      ) {
+        return res.status(400).json({
+          error:
+            err.issues?.[0]
+              ?.message ??
+            err.message ??
+            'Invalid request',
+        })
+      }
+
+      console.error(
+        '[TEACHERS] Update profile error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// UPLOAD TEACHER PROFILE PICTURE
+// ============================================================
+
+router.post(
+  '/:id/avatar',
+  requireAuth,
+  avatarUpload.single(
+    'avatar',
+  ),
+  async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const teacher =
+        await prisma.teacher.findUnique({
+          where: {
+            id: req.params.id,
+          },
+
+          include: {
+            profile: true,
+          },
+        })
+
+      if (!teacher) {
+        return res.status(404).json({
+          error:
+            'Teacher not found',
+        })
+      }
+
+      // --------------------------------------------------------
+      // CHECK OWNER
+      // --------------------------------------------------------
+
+      const isOwner =
+        req.user!.role ===
+          'TEACHER' &&
+        teacher.userId ===
+          req.user!.userId
+
+      if (
+        !isOwner &&
+        req.user!.role !==
+          'ADMIN'
+      ) {
+        return res.status(403).json({
+          error: 'Forbidden',
+        })
+      }
+
+      // --------------------------------------------------------
+      // CHECK FILE
+      // --------------------------------------------------------
+
+      if (!req.file) {
+        return res.status(400).json({
+          error:
+            'No file uploaded',
+        })
+      }
+
+      // --------------------------------------------------------
+      // NEW FILE PATH
+      // --------------------------------------------------------
+
+      const filePath =
+        `/uploads/avatars/${req.file.filename}`
+
+      // --------------------------------------------------------
+      // DELETE OLD PROFILE PICTURE
+      // --------------------------------------------------------
+
+      if (
+        teacher.profile
+          ?.profilePicture
+      ) {
+        const oldPath =
+          path.join(
+            __dirname,
+            '../../',
+            teacher.profile
+              .profilePicture,
+          )
+
+        if (
+          fs.existsSync(
+            oldPath,
+          )
+        ) {
+          fs.unlinkSync(
+            oldPath,
+          )
+        }
+      }
+
+      // --------------------------------------------------------
+      // SAVE NEW PROFILE PICTURE
+      // --------------------------------------------------------
+
+      await prisma.teacherProfile.upsert({
+        where: {
+          teacherId:
+            teacher.id,
+        },
+
+        create: {
+          id: uuidv4(),
+
+          teacherId:
+            teacher.id,
+
+          profilePicture:
+            filePath,
+        },
+
+        update: {
+          profilePicture:
+            filePath,
+        },
+      })
+
+      // --------------------------------------------------------
+      // RETURN UPDATED TEACHER
+      // --------------------------------------------------------
+
+      const updated =
+        await getTeacher(
+          teacher.id,
+        )
+
+      return res.json(
+        formatTeacher(
+          updated,
+          false,
+        ),
+      )
+    } catch (err) {
+      console.error(
+        '[TEACHERS] Avatar upload error:',
+        err,
+      )
+
+      return res.status(500).json({
+        error: 'Server error',
+      })
+    }
+  },
+)
+
+// ============================================================
+// EXPORT ROUTER
+// ============================================================
 
 export default router

@@ -3,25 +3,16 @@ import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { v4 as uuidv4 } from 'uuid'
 import multer from 'multer'
-import nodemailer from 'nodemailer'
+import { sendGmailEmail } from '../services/gmail.js'
 
 import { prisma } from '../prisma.js'
-import {
-  syncStudentCompatibility,
-  syncStudentProfileCompatibility,
-  syncUserCompatibility,
-} from '../db.js'
 import {
   requireAuth,
   requireRole,
 } from '../middleware/auth.js'
 import { deleteImageReference, deleteImageByUrl, uploadImage } from '../services/imageStorage.js'
-import { emailSchema, nameSchema, optionalDateSchema, optionalMeasurement, optionalPhoneSchema, optionalText, studentNumberSchema } from '../validation.js'
 
 const router = Router()
-
-const ACADEMIC_02_TADIQUE_ID = '__ACADEMIC_02_TADIQUE__'
-const ACADEMIC_02_TADIQUE_NAME = 'Academic 02-Tadique'
 
 
 // ============================================================
@@ -74,14 +65,16 @@ function generateTempPassword() {
 function optionalDate(
   value?: string | null,
 ) {
-  if (!value || !String(value).trim()) {
+  if (!value || !value.trim()) {
     return null
   }
 
   const date = new Date(value)
 
   if (Number.isNaN(date.getTime())) {
-    return null
+    throw new Error(
+      `Invalid date: ${value}`,
+    )
   }
 
   return date
@@ -103,95 +96,20 @@ function escapeHtml(
 
 
 // ============================================================
-// GMAIL SMTP CONFIGURATION
-// ============================================================
-const smtpUser =
-  process.env.SMTP_USER?.trim()
-
-const smtpPass =
-  process.env.SMTP_PASS?.trim()
-
-const configuredFrontendUrl = process.env.FRONTEND_URL?.trim() || 'http://localhost:5173'
-const frontendUrl = configuredFrontendUrl.replace(/\/$/, '').endsWith('/login')
-  ? configuredFrontendUrl.replace(/\/$/, '')
-  : `${configuredFrontendUrl.replace(/\/$/, '')}/login`
-
-// ============================================================
-// GMAIL TRANSPORTER
+// GMAIL EMAIL CONFIGURATION
 // ============================================================
 
-const mailTransporter =
-  nodemailer.createTransport({
-    service: 'gmail',
+const configuredFrontendUrl =
+  process.env.FRONTEND_URL?.trim() ||
+  'https://exehighsmartclass.netlify.app'
 
-    auth: {
-      user: smtpUser,
-      pass: smtpPass,
-    },
-  })
+const frontendUrl =
+  configuredFrontendUrl.replace(/\/$/, '').endsWith('/login')
+    ? configuredFrontendUrl.replace(/\/$/, '')
+    : `${configuredFrontendUrl.replace(/\/$/, '')}/login`
 
-// ============================================================
-// SMTP STARTUP CHECK
-// ============================================================
-
-if (!smtpUser || !smtpPass) {
-  console.error('')
-  console.error(
-    '==============================================',
-  )
-  console.error(
-    '⚠️ GMAIL SMTP: NOT CONFIGURED',
-  )
-  console.error(
-    '⚠️ Check SMTP_USER and SMTP_PASS in .env',
-  )
-  console.error(
-    '==============================================',
-  )
-  console.error('')
-} else {
-  mailTransporter.verify(
-    (
-      error,
-    ) => {
-      if (error) {
-        console.error('')
-        console.error(
-          '==============================================',
-        )
-        console.error(
-          '❌ GMAIL SMTP CONNECTION FAILED',
-        )
-        console.error(
-          error,
-        )
-        console.error(
-          '==============================================',
-        )
-        console.error('')
-      } else {
-        console.log('')
-        console.log(
-          '==============================================',
-        )
-        console.log(
-          '✅ GMAIL SMTP CONNECTION SUCCESSFUL',
-        )
-        console.log(
-          `📧 SMTP USER: ${smtpUser}`,
-        )
-        console.log(
-          '==============================================',
-        )
-        console.log('')
-      }
-    },
-  )
-}
-
-// ============================================================
-// SEND STUDENT CREDENTIALS EMAIL
-// ============================================================
+const schoolName =
+  'Exequiel R. Lina High School SMARTCLASS'
 
 async function sendStudentCredentialsEmail(
   params: {
@@ -208,47 +126,25 @@ async function sendStudentCredentialsEmail(
     tempPassword,
   } = params
 
-  // ----------------------------------------------------------
-  // CHECK SMTP CONFIGURATION
-  // ----------------------------------------------------------
-
-  if (!smtpUser || !smtpPass) {
-    throw new Error(
-      'SMTP_USER and SMTP_PASS are not configured in .env',
-    )
-  }
 
   // ----------------------------------------------------------
   // LOGIN URL
   // ----------------------------------------------------------
 
-  const loginUrl =
-    frontendUrl
+  const loginUrl = frontendUrl
 
   // ----------------------------------------------------------
   // SEND EMAIL
   // ----------------------------------------------------------
 
    const info =
-    await mailTransporter.sendMail({
-      from: `"SMARTCLASS" <${smtpUser}>`,
-
+    await sendGmailEmail({
       to: email,
-
-      subject:
-        'SMARTCLASS Student Account Credentials',
-
-      replyTo: smtpUser,
-
-      headers: {
-        'X-Priority': '1',
-        Importance: 'high',
-      },
-
+      subject: 'SMARTCLASS Student Account Credentials',
       text: `
 Hello ${fullName},
 
-Your SMARTCLASS student account has been successfully created.
+Your ${schoolName} student account has been successfully created.
 
 Student Number:
 ${studentNumber}
@@ -267,9 +163,8 @@ You will be required to change your password when you log in for the first time.
 If you did not expect this account, please contact the school administrator.
 
 Regards,
-SMARTCLASS Administration
+${schoolName} Administration
       `.trim(),
-
       html: `
 <!DOCTYPE html>
 <html>
@@ -282,7 +177,7 @@ SMARTCLASS Administration
   />
 
   <title>
-    SMARTCLASS Student Account
+    Exequiel R. Lina High School SMARTCLASS Student Account
   </title>
 </head>
 
@@ -320,7 +215,7 @@ SMARTCLASS Administration
           text-align:center;
         "
       >
-        SMARTCLASS
+        Exequiel R. Lina High School SMARTCLASS
       </h1>
 
       <h2
@@ -489,7 +384,7 @@ SMARTCLASS Administration
       >
         Regards,<br />
         <strong>
-          SMARTCLASS Administration
+          Exequiel R. Lina High School SMARTCLASS Administration
         </strong>
       </p>
 
@@ -666,29 +561,41 @@ router.post(
       const data =
         z
           .object({
-            studentNumber: studentNumberSchema,
+            studentNumber:
+              z.string().min(1),
 
-            fullName: nameSchema('Full Name'),
+            fullName:
+              z.string().min(1),
 
-            email: emailSchema,
+            email:
+              z.string().email(),
 
-            gender: z.string().trim().min(1, 'Gender is required.'),
+            gender:
+              z.string().optional(),
 
-            birthDate: z.string().trim().min(1, 'Birth date is required.').refine(v => optionalDate(v) !== null, 'Birth date is invalid.'),
+            birthDate:
+              z.string().optional(),
 
-            contactNumber: optionalPhoneSchema.refine(v => !!v?.trim(), 'Contact number is required.'),
+            contactNumber:
+              z.string().optional(),
 
-            guardianName: nameSchema('Guardian Name'),
+            guardianName:
+              z.string().optional(),
 
-            guardianContact: optionalPhoneSchema.refine(v => !!v?.trim(), 'Guardian contact is required.'),
+            guardianContact:
+              z.string().optional(),
 
-            gradeLevelId: z.string().trim().min(1, 'Grade Level is required.'),
+            gradeLevelId:
+              z.string().optional(),
 
-            strandId: z.string().trim().optional().default(''),
+            strandId:
+              z.string().optional(),
 
-            sectionId: z.string().trim().min(1, 'Section is required.'),
+            sectionId:
+              z.string().optional(),
 
-            academicYearId: z.string().trim().min(1, 'Academic Year is required.'),
+            academicYearId:
+              z.string().optional(),
           })
           .parse(req.body)
 
@@ -729,23 +636,13 @@ router.post(
         }),
       ])
 
-      if (existingUser) {
-        return res.status(409).json({
-          error: 'An account with this email already exists.',
-          field: 'email',
-        })
-      }
-
-      if (existingStudent) {
-        return res.status(409).json({
+      if (
+        existingStudent ||
+        existingUser
+      ) {
+        return res.status(400).json({
           error:
-            existingStudent.studentNumber === studentNumber
-              ? 'A student with this student number already exists.'
-              : 'An account with this email already exists.',
-          field:
-            existingStudent.studentNumber === studentNumber
-              ? 'studentNumber'
-              : 'email',
+            'Student number or email already exists',
         })
       }
 
@@ -842,44 +739,29 @@ router.post(
               },
             )
 
-            if (data.sectionId && data.academicYearId && data.gradeLevelId) {
-              let resolvedSectionId = data.sectionId
+            if (
+              data.sectionId &&
+              data.academicYearId &&
+              data.gradeLevelId
+            ) {
+              await tx.studentSectionAssignment.create(
+                {
+                  data: {
+                    id: uuidv4(),
 
-              // The Create Student form offers this requested section as a convenience option.
-              // If it does not exist yet for the selected grade level, create it once.
-              if (data.sectionId === ACADEMIC_02_TADIQUE_ID) {
-                const existingSection = await tx.section.findFirst({
-                  where: {
-                    gradeLevelId: data.gradeLevelId,
-                    name: ACADEMIC_02_TADIQUE_NAME,
+                    studentId,
+
+                    sectionId:
+                      data.sectionId,
+
+                    academicYearId:
+                      data.academicYearId,
+
+                    gradeLevelId:
+                      data.gradeLevelId,
                   },
-                })
-
-                if (existingSection) {
-                  resolvedSectionId = existingSection.id
-                } else {
-                  const createdSection = await tx.section.create({
-                    data: {
-                      id: uuidv4(),
-                      gradeLevelId: data.gradeLevelId,
-                      strandId: data.strandId || null,
-                      name: ACADEMIC_02_TADIQUE_NAME,
-                      status: 'active',
-                    },
-                  })
-                  resolvedSectionId = createdSection.id
-                }
-              }
-
-              await tx.studentSectionAssignment.create({
-                data: {
-                  id: uuidv4(),
-                  studentId,
-                  sectionId: resolvedSectionId,
-                  academicYearId: data.academicYearId,
-                  gradeLevelId: data.gradeLevelId,
                 },
-              })
+              )
             }
 
             return tx.student.findUnique(
@@ -906,16 +788,6 @@ router.post(
           },
         )
 
-      // Synchronize the compatibility snapshot before the global
-      // response auto-save runs. This keeps newly-created account data
-      // available to legacy routes without allowing stale memory to
-      // overwrite the Prisma records.
-      if (student?.user) syncUserCompatibility(student.user)
-      if (student) {
-        syncStudentCompatibility(student)
-        if (student.profile) syncStudentProfileCompatibility(student.profile)
-      }
-
       // --------------------------------------------------------
       // IMPORTANT:
       // SEND EMAIL AFTER DATABASE CREATION
@@ -928,7 +800,7 @@ router.post(
         | null = null
 
       try {
-        void sendStudentCredentialsEmail(
+        await sendStudentCredentialsEmail(
           {
             email,
 
@@ -980,13 +852,6 @@ router.post(
     } catch (
       err: any
     ) {
-      if (err?.code === 'P2002') {
-        return res.status(409).json({
-          error: 'An account with this email already exists.',
-          field: 'email',
-        })
-      }
-
       if (
         err?.name ===
         'ZodError'
@@ -1361,20 +1226,15 @@ router.post(
       // UPDATE ACCOUNT
       // --------------------------------------------------------
 
-      const updatedUser = await prisma.user.update({
-        where: {
-          id: s.userId,
-        },
-        data: {
-          passwordHash,
-          // Admin reset creates a temporary password.
-          // Require the student to set a new personal password
-          // on the next login.
-          isFirstLogin: true,
-        },
-      })
-
-      syncUserCompatibility(updatedUser)
+      await prisma.user.update({
+  where: {
+    id: s.userId,
+  },
+  data: {
+    passwordHash,
+    
+  },
+})
 
       // --------------------------------------------------------
       // SEND EMAIL
@@ -1387,7 +1247,7 @@ router.post(
         | null = null
 
       try {
-        void sendStudentCredentialsEmail(
+        await sendStudentCredentialsEmail(
           {
             email: s.email,
 
@@ -1464,16 +1324,44 @@ router.post(
       } =
         z
           .object({
-            rows: z.array(z.object({
-                studentNumber: z.string().default(''),
-                fullName: z.string().default(''),
-                email: z.string().default(''),
-                gender: z.string().optional().default(''),
-                birthDate: z.string().optional().default(''),
-                contactNumber: z.string().optional().default(''),
-                guardianName: z.string().optional().default(''),
-                guardianContact: z.string().optional().default(''),
-              })).min(1, 'CSV must contain at least one student row.').max(5000, 'CSV cannot contain more than 5,000 student rows.'),
+            rows:
+              z.array(
+                z.object({
+                  studentNumber:
+                    z.string(),
+
+                  fullName:
+                    z.string(),
+
+                  email:
+                    z.string(),
+
+                  gender:
+                    z.string()
+                      .optional()
+                      .default(''),
+
+                  birthDate:
+                    z.string()
+                      .optional()
+                      .default(''),
+
+                  contactNumber:
+                    z.string()
+                      .optional()
+                      .default(''),
+
+                  guardianName:
+                    z.string()
+                      .optional()
+                      .default(''),
+
+                  guardianContact:
+                    z.string()
+                      .optional()
+                      .default(''),
+                }),
+              ),
 
             dryRun:
               z.boolean()
@@ -1525,24 +1413,6 @@ router.post(
         const errors:
           string[] = []
 
-        const numberCheck = studentNumberSchema.safeParse(row.studentNumber.trim())
-        if (!numberCheck.success) errors.push(numberCheck.error.issues[0]?.message || 'Invalid student number')
-
-        const nameCheck = nameSchema('Full Name').safeParse(row.fullName.trim())
-        if (!nameCheck.success) errors.push(nameCheck.error.issues[0]?.message || 'Invalid full name')
-
-        const emailCheck = emailSchema.safeParse(row.email.trim())
-        if (!emailCheck.success) errors.push(emailCheck.error.issues[0]?.message || 'Invalid email format')
-
-        const phoneCheck = optionalPhoneSchema.safeParse(row.contactNumber.trim())
-        if (!phoneCheck.success) errors.push(phoneCheck.error.issues[0]?.message || 'Invalid contact number')
-
-        const guardianPhoneCheck = optionalPhoneSchema.safeParse(row.guardianContact.trim())
-        if (!guardianPhoneCheck.success) errors.push(guardianPhoneCheck.error.issues[0]?.message || 'Invalid guardian contact')
-
-        const birthCheck = optionalDateSchema('Birth date').safeParse(row.birthDate.trim())
-        if (!birthCheck.success) errors.push(birthCheck.error.issues[0]?.message || 'Invalid birth date')
-
         const num =
           row.studentNumber
             .trim()
@@ -1551,6 +1421,34 @@ router.post(
           row.email
             .trim()
             .toLowerCase()
+
+        if (!num) {
+          errors.push(
+            'Student number is required',
+          )
+        }
+
+        if (
+          !row.fullName.trim()
+        ) {
+          errors.push(
+            'Full name is required',
+          )
+        }
+
+        if (!email) {
+          errors.push(
+            'Email is required',
+          )
+        } else if (
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+            email,
+          )
+        ) {
+          errors.push(
+            'Invalid email format',
+          )
+        }
 
         if (
           seenNumbers.has(num)
@@ -1867,15 +1765,6 @@ router.post(
           },
         )
 
-        // Refresh the compatibility snapshot with the newly imported
-        // account so later legacy routes see the same data as Prisma.
-        const importedStudent = await getStudent(studentId)
-        if (importedStudent?.user) syncUserCompatibility(importedStudent.user)
-        if (importedStudent) {
-          syncStudentCompatibility(importedStudent)
-          if (importedStudent.profile) syncStudentProfileCompatibility(importedStudent.profile)
-        }
-
         // ------------------------------------------------------
         // SEND EMAIL
         // ------------------------------------------------------
@@ -1888,7 +1777,7 @@ router.post(
           | undefined
 
         try {
-          void sendStudentCredentialsEmail(
+          await sendStudentCredentialsEmail(
             {
               email:
                 normalizedEmail,
@@ -2159,10 +2048,16 @@ router.patch(
       }
 
       const isOwner =
-        (req.user!.role === 'STUDENT' && (s.userId === req.user!.userId || s.id === req.user!.userId)) ||
-        req.user!.role === 'ADMIN'
+        req.user!.role ===
+          'STUDENT' &&
+        s.userId ===
+          req.user!.userId
 
-      if (!isOwner) {
+      if (
+        !isOwner &&
+        req.user!.role !==
+          'ADMIN'
+      ) {
         return res.status(403).json({
           error: 'Forbidden',
         })
@@ -2206,7 +2101,7 @@ router.patch(
             bloodType:
               z.string()
                 .trim()
-                .max(20)
+                .max(10)
                 .optional(),
 
             weight:
@@ -2221,8 +2116,7 @@ router.patch(
 
                 z
                   .number()
-                  .min(0)
-                  .max(1000)
+                  .positive()
                   .nullable()
                   .optional(),
               ),
@@ -2239,8 +2133,7 @@ router.patch(
 
                 z
                   .number()
-                  .min(0)
-                  .max(1000)
+                  .positive()
                   .nullable()
                   .optional(),
               ),
@@ -2416,11 +2309,6 @@ router.patch(
           s.id,
         )
 
-      if (updated) {
-        syncStudentCompatibility(updated)
-        if (updated.profile) syncStudentProfileCompatibility(updated.profile)
-      }
-
       res.json(
         formatStudent(
           updated,
@@ -2466,17 +2354,18 @@ router.post(
     res: Response,
   ) => {
     try {
-      const s = await prisma.student.findFirst({
-        where: {
-          OR: [
-            { id: req.params.id },
-            { userId: req.params.id },
-          ],
-        },
-        include: {
-          profile: true,
-        },
-      })
+      const s =
+        await prisma.student.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+
+            include: {
+              profile: true,
+            },
+          },
+        )
 
       if (!s) {
         return res.status(404).json({
@@ -2486,10 +2375,16 @@ router.post(
       }
 
       const isOwner =
-        (req.user!.role === 'STUDENT' && (s.userId === req.user!.userId || s.id === req.user!.userId)) ||
-        req.user!.role === 'ADMIN'
+        req.user!.role ===
+          'STUDENT' &&
+        s.userId ===
+          req.user!.userId
 
-      if (!isOwner) {
+      if (
+        !isOwner &&
+        req.user!.role !==
+          'ADMIN'
+      ) {
         return res.status(403).json({
           error: 'Forbidden',
         })
@@ -2544,13 +2439,6 @@ router.post(
         throw dbError
       }
 
-      // Keep the in-memory compatibility snapshot in sync so the global
-      // response auto-save cannot restore the previous image URL.
-      const updatedProfile = await prisma.studentProfile.findUnique({
-        where: { studentId: s.id },
-      })
-      if (updatedProfile) syncStudentProfileCompatibility(updatedProfile)
-
       res.json(
         formatStudent(
           await getStudent(
@@ -2584,17 +2472,18 @@ router.post(
     res: Response,
   ) => {
     try {
-      const s = await prisma.student.findFirst({
-        where: {
-          OR: [
-            { id: req.params.id },
-            { userId: req.params.id },
-          ],
-        },
-        include: {
-          profile: true,
-        },
-      })
+      const s =
+        await prisma.student.findUnique(
+          {
+            where: {
+              id: req.params.id,
+            },
+
+            include: {
+              profile: true,
+            },
+          },
+        )
 
       if (!s) {
         return res.status(404).json({
@@ -2604,10 +2493,16 @@ router.post(
       }
 
       const isOwner =
-        (req.user!.role === 'STUDENT' && (s.userId === req.user!.userId || s.id === req.user!.userId)) ||
-        req.user!.role === 'ADMIN'
+        req.user!.role ===
+          'STUDENT' &&
+        s.userId ===
+          req.user!.userId
 
-      if (!isOwner) {
+      if (
+        !isOwner &&
+        req.user!.role !==
+          'ADMIN'
+      ) {
         return res.status(403).json({
           error: 'Forbidden',
         })
@@ -2661,13 +2556,6 @@ router.post(
         await deleteImageByUrl(stored.url).catch(() => undefined)
         throw dbError
       }
-
-      // Keep the in-memory compatibility snapshot in sync so the global
-      // response auto-save cannot restore the previous image URL.
-      const updatedProfile = await prisma.studentProfile.findUnique({
-        where: { studentId: s.id },
-      })
-      if (updatedProfile) syncStudentProfileCompatibility(updatedProfile)
 
       res.json(
         formatStudent(
